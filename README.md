@@ -1,6 +1,25 @@
 # AgentProbe
 
-Multi-agent quality governance system for AI-generated code. Runs as a GitHub Action evaluating PRs against team conventions, architectural boundaries, and semantic behavior invariants.
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Agent_DAG-orange.svg)](https://www.langchain.com/langgraph)
+[![Tests](https://img.shields.io/badge/Tests-86_passing-brightgreen.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+> Multi-agent quality governance system for AI-generated code. Runs as a GitHub Action evaluating PRs against team conventions, architectural boundaries, and semantic behavior invariants.
+
+## Why I Built This
+
+In April 2026, Anthropic shipped a multi-agent code review tool for Claude Code — proving the market for automated code governance is real. But most AI code reviewers (CodeRabbit, Qodo, Copilot) rely **entirely on LLMs**, which means non-deterministic results, hallucinated findings, and no way to enforce hard architectural rules.
+
+AgentProbe takes a different approach: **deterministic rules first, optional LLM second.** The Architecture and Pattern agents use pure AST parsing — zero LLM calls, zero hallucinations. Only the Regression agent optionally uses an LLM (Ollama/local) for semantic diffing. This means you get reliable, reproducible governance that won't randomly block your team's PRs.
+
+## Technical Highlights
+
+- **3-layer regression detection:** Logic Summary Diffing → Property-Based Testing → Behavioral Fingerprinting — each layer is progressively more expensive, so cheap checks run first
+- **Weighted scoring with short-circuit:** Architecture violations (40%) can auto-BLOCK before Pattern (25%) or Regression (35%) even run
+- **AST-first, not LLM-first:** Architecture and Pattern agents use Python's `ast.parse()` for deterministic analysis — no API keys, no rate limits, no hallucinated findings
+- **86 tests** covering all agents, HMAC webhook verification, and integration paths
+- **LangGraph DAG orchestration** with state passing between agents and configurable YAML boundaries
 
 ## Architecture
 
