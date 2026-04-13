@@ -1,0 +1,31 @@
+name: "AgentProbe — AI Code Governance"
+description: "Multi-agent quality governance for AI-generated PRs"
+inputs:
+  github_token:
+    description: "GitHub token for API access"
+    required: true
+  config_path:
+    description: "Path to AgentProbe config"
+    default: ".agentprobe/config.yaml"
+  style_profile_path:
+    description: "Path to style profile"
+    default: ".agentprobe/style-profile.yaml"
+  boundaries_path:
+    description: "Path to boundaries config"
+    default: ".agentprobe/boundaries.yaml"
+  block_threshold:
+    description: "Score threshold for BLOCK verdict"
+    default: "70"
+  warn_threshold:
+    description: "Score threshold for WARN verdict"
+    default: "40"
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  env:
+    GITHUB_TOKEN: ${{ inputs.github_token }}
+    CONFIG_PATH: ${{ inputs.config_path }}
+    STYLE_PROFILE_PATH: ${{ inputs.style_profile_path }}
+    BOUNDARIES_PATH: ${{ inputs.boundaries_path }}
+    BLOCK_THRESHOLD: ${{ inputs.block_threshold }}
+    WARN_THRESHOLD: ${{ inputs.warn_threshold }}
