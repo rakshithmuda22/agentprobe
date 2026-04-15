@@ -326,6 +326,10 @@ class BehavioralFingerprinter:
         if not _validate_source(before_source) or not _validate_source(after_source):
             return None
 
+        # Identical sources always match outputs; skip timing noise from subprocess runs.
+        if before_source == after_source:
+            return 0.0
+
         if test_inputs is None:
             test_inputs = [
                 {"args": [1], "kwargs": {}},

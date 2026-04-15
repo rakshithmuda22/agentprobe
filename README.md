@@ -2,7 +2,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Agent_DAG-orange.svg)](https://www.langchain.com/langgraph)
-[![Tests](https://img.shields.io/badge/Tests-86_passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-253_passing-brightgreen.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > Multi-agent quality governance system for AI-generated code. Runs as a GitHub Action evaluating PRs against team conventions, architectural boundaries, and semantic behavior invariants.
@@ -18,7 +18,7 @@ AgentProbe takes a different approach: **deterministic rules first, optional LLM
 - **3-layer regression detection:** Logic Summary Diffing → Property-Based Testing → Behavioral Fingerprinting — each layer is progressively more expensive, so cheap checks run first
 - **Weighted scoring with short-circuit:** Architecture violations (40%) can auto-BLOCK before Pattern (25%) or Regression (35%) even run
 - **AST-first, not LLM-first:** Architecture and Pattern agents use Python's `ast.parse()` for deterministic analysis — no API keys, no rate limits, no hallucinated findings
-- **86 tests** covering all agents, HMAC webhook verification, and integration paths
+- **253 pytest tests** (90 core governance + optional experimental suite) covering agents, HMAC webhook verification, and integration paths
 - **LangGraph DAG orchestration** with state passing between agents and configurable YAML boundaries
 
 ## Architecture
@@ -77,8 +77,8 @@ jobs:
   governance:
     runs-on: ubuntu-latest
     steps:
-      - uses: checkout@v4
-      - uses: your-org/agentprobe@main
+      - uses: actions/checkout@v4
+      - uses: rakshithmuda22/agentprobe@main
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -87,7 +87,7 @@ jobs:
 
 ```bash
 # Clone and install
-git clone <repo-url>
+git clone https://github.com/rakshithmuda22/agentprobe.git
 cd agentprobe
 python3.11 -m venv .venv
 source .venv/bin/activate
@@ -196,7 +196,7 @@ agentprobe/
     integrations/     # GitHub App, webhook server, action runner
     parsers/          # Tree-sitter engine, diff parser, import graph
     profiles/         # Boundary loader, style generator
-  tests/              # 86 tests covering all agents and integrations
+  tests/              # 253 tests (90 core + experimental); governance + integrations
   action/             # GitHub Action manifest and Dockerfile
   .agentprobe/        # Default configuration files
 ```
