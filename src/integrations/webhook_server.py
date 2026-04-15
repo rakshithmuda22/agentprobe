@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import logging
 import os
-from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 import structlog

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import sys
 from pathlib import Path
@@ -13,7 +12,6 @@ import structlog
 from src.graph.state import AgentProbeState
 from src.graph.workflow import run_agentprobe
 from src.integrations.github_app import GitHubClient
-from src.profiles.style_generator import load_style_profile
 
 logger = structlog.get_logger(__name__)
 

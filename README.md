@@ -2,7 +2,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Agent_DAG-orange.svg)](https://www.langchain.com/langgraph)
-[![Tests](https://img.shields.io/badge/Tests-253_passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-272_passing-brightgreen.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > Multi-agent quality governance system for AI-generated code. Runs as a GitHub Action evaluating PRs against team conventions, architectural boundaries, and semantic behavior invariants.
@@ -18,7 +18,7 @@ AgentProbe takes a different approach: **deterministic rules first, optional LLM
 - **3-layer regression detection:** Logic Summary Diffing → Property-Based Testing → Behavioral Fingerprinting — each layer is progressively more expensive, so cheap checks run first
 - **Weighted scoring with short-circuit:** Architecture violations (40%) can auto-BLOCK before Pattern (25%) or Regression (35%) even run
 - **AST-first, not LLM-first:** Architecture and Pattern agents use Python's `ast.parse()` for deterministic analysis — no API keys, no rate limits, no hallucinated findings
-- **253 pytest tests** (90 core governance + optional experimental suite) covering agents, HMAC webhook verification, and integration paths
+- **272 pytest tests** (90 core governance + 182 experimental suite) covering agents, HMAC webhook verification, and integration paths
 - **LangGraph DAG orchestration** with state passing between agents and configurable YAML boundaries
 
 ## Architecture
@@ -129,22 +129,21 @@ llm:
 
 ```yaml
 modules:
-  - name: payments
-    path: src/payments
-    allowed_imports: [src/utils, src/models]
-  - name: analytics
-    path: src/analytics
-    allowed_imports: [src/utils]
+  payments:
+    allowed_imports: [utils, models]
+    forbidden_imports: [analytics, marketing]
+  analytics:
+    allowed_imports: [utils]
 layers:
   - name: presentation
     modules: [src/api, src/web]
+    can_import: [domain]
   - name: domain
     modules: [src/models, src/services]
+    can_import: [infrastructure]
   - name: infrastructure
     modules: [src/db, src/cache]
-layer_rules:
-  presentation: [domain]
-  domain: [infrastructure]
+    can_import: []
 ```
 
 ### `.agentprobe/style-profile.yaml`
@@ -157,10 +156,8 @@ naming:
 imports:
   order: [builtin, external, internal, relative]
 forbidden:
-  - pattern: "console\\.log"
-    message: "Use structured logging instead"
-  - pattern: "import pdb"
-    message: "Remove debugger imports"
+  - console.log-in-production-code
+  - any-type-in-typescript
 ```
 
 ## Webhook Server
@@ -196,7 +193,7 @@ agentprobe/
     integrations/     # GitHub App, webhook server, action runner
     parsers/          # Tree-sitter engine, diff parser, import graph
     profiles/         # Boundary loader, style generator
-  tests/              # 253 tests (90 core + experimental); governance + integrations
+  tests/              # 272 tests (90 core + 182 experimental); governance + integrations
   action/             # GitHub Action manifest and Dockerfile
   .agentprobe/        # Default configuration files
 ```
