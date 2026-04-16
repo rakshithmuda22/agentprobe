@@ -9,7 +9,7 @@
 
 ## Why I Built This
 
-In April 2026, Anthropic shipped a multi-agent code review tool for Claude Code — proving the market for automated code governance is real. But most AI code reviewers (CodeRabbit, Qodo, Copilot) rely **entirely on LLMs**, which means non-deterministic results, hallucinated findings, and no way to enforce hard architectural rules.
+AI-generated code is now a significant share of every PR, and the existing code review tools (CodeRabbit, Qodo, Copilot) rely **entirely on LLMs** to police it. That means non-deterministic results, hallucinated findings, and no way to enforce hard architectural rules. Teams need reliable, reproducible governance that won't randomly block their PRs.
 
 AgentProbe takes a different approach: **deterministic rules first, optional LLM second.** The Architecture and Pattern agents use pure AST parsing — zero LLM calls, zero hallucinations. Only the Regression agent optionally uses an LLM (Ollama/local) for semantic diffing. This means you get reliable, reproducible governance that won't randomly block your team's PRs.
 
