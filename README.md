@@ -5,13 +5,13 @@
 [![Tests](https://img.shields.io/badge/Tests-90_passing-brightgreen.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Multi-agent quality governance system for AI-generated code. Runs as a GitHub Action evaluating PRs against team conventions, architectural boundaries, and semantic behavior invariants.
+> Deterministic PR governance as a GitHub Action. Architectural boundaries + naming conventions + import rules checked against your codebase using AST parsing — no LLM judge, no hallucinated findings, no per-PR API cost.
 
 ## Why I Built This
 
-AI-generated code is now a significant share of every PR, and the existing code review tools (CodeRabbit, Qodo, Copilot) rely **entirely on LLMs** to police it. That means non-deterministic results, hallucinated findings, and no way to enforce hard architectural rules. Teams need reliable, reproducible governance that won't randomly block their PRs.
+Most AI code-review tools in 2026 ([CodeRabbit](https://www.coderabbit.ai/), [Qodo](https://www.qodo.ai/), [GitHub Copilot code review](https://docs.github.com/en/copilot/using-github-copilot/code-review)) are LLM-first. That's the right call for finding *bugs* — LLMs are genuinely good at that — but the wrong call for *governance*: "this module must not import from analytics," "every service must inherit BaseService," "no new `any` types in TypeScript." Those are deterministic rules, and running them through an LLM adds latency, API cost, and the risk that the model hallucinates a violation (or misses one) on any given PR.
 
-AgentProbe takes a different approach: **deterministic rules first, optional LLM second.** The Architecture and Pattern agents use pure AST parsing — zero LLM calls, zero hallucinations. Only the Regression agent optionally uses an LLM (Ollama/local) for semantic diffing. This means you get reliable, reproducible governance that won't randomly block your team's PRs.
+AgentProbe fills the narrow gap: **deterministic AST-based policy enforcement** that runs alongside (not instead of) your LLM reviewer. Architecture and Pattern agents parse the diff, cross-check it against a YAML policy, and emit structured verdicts. Zero LLM calls. Zero API keys required. The Regression agent optionally runs a local Ollama model for semantic diff summaries, but it's not on the critical path.
 
 ## Technical Highlights
 
