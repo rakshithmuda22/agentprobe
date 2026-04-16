@@ -162,21 +162,20 @@ class TestBehavioralFingerprinter:
         assert divergence is not None
         assert divergence < 0.5  # Should be very close to 0
 
-    def test_different_outputs_high_divergence(self):
-        """Functions with different outputs should have divergence >= 1.0."""
+    def test_layer3_disabled_returns_none_for_different_sources(self):
+        """Layer 3 is disabled for safety (no sandbox); it must return None
+        rather than execute untrusted PR code."""
         before = "def calc(x):\n    return x * 2\n"
         after = "def calc(x):\n    return x * 3\n"
         divergence = self.fingerprinter.fingerprint(before, after, "calc")
-        assert divergence is not None
-        assert divergence >= 1.0
+        assert divergence is None
 
-    def test_error_vs_none_divergence(self):
-        """Function that raises vs returns None should show divergence."""
+    def test_layer3_disabled_for_error_change(self):
+        """Same disabled-by-design behavior on error-pattern changes."""
         before = "def check(x):\n    if x < 0:\n        raise ValueError('bad')\n    return x\n"
         after = "def check(x):\n    if x < 0:\n        return None\n    return x\n"
         divergence = self.fingerprinter.fingerprint(before, after, "check")
-        assert divergence is not None
-        assert divergence >= 1.0
+        assert divergence is None
 
 
 # ── Full Regression Agent ───────────────────────────────────────

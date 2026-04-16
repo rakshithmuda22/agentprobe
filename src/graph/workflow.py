@@ -43,8 +43,10 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # Pattern and regression run after architecture (sequentially for simplicity,
-    # LangGraph handles the fan-out internally when using parallel branches)
+    # Pattern -> regression -> verdict runs sequentially. LangGraph gives
+    # us typed state passing and a declarative workflow; genuine parallel
+    # fan-out would need state merging and isn't worth the complexity
+    # for a 3-agent pipeline.
     graph.add_edge("pattern_agent", "regression_agent")
     graph.add_edge("regression_agent", "verdict_orchestrator")
 

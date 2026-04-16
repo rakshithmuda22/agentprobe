@@ -367,43 +367,18 @@ class BehavioralFingerprinter:
     @staticmethod
     def _execute_function(source: str, function_name: str,
                           inputs: list[dict]) -> list[tuple] | None:
-        """Execute a function in a subprocess and collect results + timing."""
-        exc_format = 'f"EXCEPTION:{type(e).__name__}:{e}"'
-        runner_lines = [
-            "import json, time, sys",
-            "",
-            source,
-            "",
-            "results = []",
-            f"for inp in {json.dumps(inputs)}:",
-            '    args = inp.get("args", [])',
-            '    kwargs = inp.get("kwargs", {})',
-            '    start = time.perf_counter()',
-            '    try:',
-            f'        result = {function_name}(*args, **kwargs)',
-            '        elapsed = time.perf_counter() - start',
-            '        results.append({"output": repr(result), "time": elapsed})',
-            '    except Exception as e:',
-            '        elapsed = time.perf_counter() - start',
-            f'        results.append({{"output": {exc_format}, "time": elapsed}})',
-            '',
-            'print(json.dumps(results))',
-        ]
-        runner_code = "\n".join(runner_lines)
+        """SECURITY: disabled.
 
-        try:
-            result = subprocess.run(
-                [sys.executable, "-c", runner_code],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                data = json.loads(result.stdout.strip())
-                return [(d["output"], d["time"]) for d in data]
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError):
-            pass
+        Executing untrusted code from pull requests inside the governance
+        runner would be a remote-code-execution primitive — any PR could
+        ship a malicious function body and have it run against the Action's
+        GITHUB_TOKEN. Layer 3 is disabled until this runs inside a proper
+        sandbox (gVisor / Firecracker / ephemeral container without
+        repo secrets). Layers 1 and 2 still provide useful signal.
 
+        Returns None so the fingerprint() caller falls through to
+        "comparison not possible".
+        """
         return None
 
 
