@@ -1,9 +1,11 @@
 """Regression Agent — detects semantic behavior changes in modified functions.
 
-Three-layer detection:
+Two active detection layers (Layer 3 is intentionally disabled):
   Layer 1: Logic Summary Diffing (LLM or deterministic fallback)
   Layer 2: Property-Based Testing (Hypothesis, only if Layer 1 finds deltas)
-  Layer 3: Behavioral Fingerprinting (only for critical dirs)
+  Layer 3: Behavioral Fingerprinting — DISABLED. Subprocess execution of
+    unvetted PR code is an RCE primitive; it needs a proper sandbox
+    (gVisor / Firecracker), which is out of scope. The call is a no-op.
 """
 
 from __future__ import annotations
@@ -389,11 +391,11 @@ _global_cache = MemoryCache()
 
 
 def run(state: AgentProbeState) -> AgentProbeState:
-    """Run 3-layer semantic regression detection on modified functions.
+    """Run semantic regression detection on modified functions.
 
     Layer 1: Logic Summary Diffing (Ollama or deterministic fallback)
     Layer 2: Property-Based Testing (only if deltas found)
-    Layer 3: Behavioral Fingerprinting (only for critical dirs)
+    Layer 3: Behavioral Fingerprinting — disabled (no-op; see module docstring)
     """
     pr_diff = state.get("pr_diff", "")
     repo_path = state.get("repo_path", ".")

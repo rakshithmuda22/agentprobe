@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from src.config.loader import AgentProbeConfig, load_config
 from src.graph.state import AgentProbeState
 
 
@@ -98,6 +101,14 @@ def build_comment(verdict: dict, state: AgentProbeState) -> str:
 
 def run(state: AgentProbeState) -> AgentProbeState:
     """Calculate governance score and produce final verdict with PR comment."""
+    repo_path = state.get("repo_path")
+    config = (
+        load_config(Path(repo_path) / ".agentprobe" / "config.yaml")
+        if repo_path
+        else AgentProbeConfig()
+    )
+    weights = config.weights
+
     arch_score = STATUS_SCORES.get(
         (state.get("architecture_report") or {}).get("status", "PASS"), 0
     )
@@ -108,15 +119,19 @@ def run(state: AgentProbeState) -> AgentProbeState:
         (state.get("regression_report") or {}).get("status", "PASS"), 0
     )
 
-    weighted = arch_score * 0.40 + pattern_score * 0.25 + regression_score * 0.35
+    weighted = (
+        arch_score * weights.get("architecture", 0.40)
+        + pattern_score * weights.get("pattern", 0.25)
+        + regression_score * weights.get("regression", 0.35)
+    )
 
     # Short-circuit: if architecture found FATAL, always BLOCK regardless of score
     if state.get("short_circuit", False):
         verdict_status = "BLOCK"
         weighted = max(weighted, 100.0)
-    elif weighted > 70:
+    elif weighted > config.block_threshold:
         verdict_status = "BLOCK"
-    elif weighted > 40:
+    elif weighted > config.warn_threshold:
         verdict_status = "WARN"
     else:
         verdict_status = "PASS"

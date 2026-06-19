@@ -17,7 +17,7 @@ AgentProbe fills the narrow gap: **deterministic AST-based policy enforcement** 
 
 - **2-layer regression detection:** Logic Summary Diffing (Layer 1) → Property-Based Testing (Layer 2). Layer 3 (Behavioral Fingerprinting by subprocess execution) is disabled — executing unvetted PR code inside a governance runner is an RCE primitive and requires a proper sandbox (gVisor / Firecracker) that is out of scope here
 - **Weighted scoring with short-circuit:** Architecture violations (40%) can auto-BLOCK before Pattern (25%) or Regression (35%) even run
-- **AST-first, not LLM-first:** Architecture and Pattern agents use `ast.parse()` for deterministic analysis — no API keys, no rate limits, no hallucinated findings
+- **AST-first, not LLM-first:** Architecture and Pattern agents use Tree-sitter for deterministic AST parsing — no API keys, no rate limits, no hallucinated findings
 - **90 pytest tests** covering agents, HMAC webhook verification, parsers, end-to-end workflows, and integration paths
 - **LangGraph state-graph orchestration** with typed state passing, YAML-driven boundary rules, and conditional short-circuit routing
 
@@ -173,9 +173,9 @@ Configure your GitHub webhook to point to `https://your-server/webhook` with con
 ## Security
 
 - Webhook signature verification (HMAC-SHA256) is **always required**
-- Function names are validated against `[a-zA-Z_][a-zA-Z0-9_]*` before subprocess execution
+- Function names are validated against `[a-zA-Z_][a-zA-Z0-9_]*` before generated property tests run in a subprocess
 - Source code size limits prevent DoS (50KB per function, 1MB per diff)
-- Subprocess execution uses timeouts (10s fingerprinting, 30s property tests)
+- Subprocess execution uses a 30s timeout (property tests)
 - Constant-time signature comparison prevents timing attacks
 - No arbitrary code execution from PR diffs without validation
 
