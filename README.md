@@ -9,6 +9,22 @@ that crosses a module boundary, flags naming and forbidden-pattern violations in
 diff, and catches behavior changes, such as a function that used to raise and now returns `None`,
 with a differential property test. It's deterministic: no LLM, no API keys, no per-PR cost.
 
+## On a real pull request
+
+[PR #1](https://github.com/rakshithmuda22/agentprobe/pull/1) is a demo change to this repo that
+breaks the repo's own policy. It adds an analyzer that imports the GitHub client (`agents` may not
+import `integrations`) and gives a function a camelCase name. The AgentProbe workflow blocked it:
+it posted this comment, set a failing `agentprobe/governance` status on the commit and failed the
+`governance` job.
+
+![AgentProbe's BLOCK comment on PR #1](docs/assets/pr-comment.png)
+
+Each finding is also annotated on the line that caused it:
+
+![AgentProbe annotations on PR #1's Files tab](docs/assets/pr-annotations.png)
+
+The PR was closed without merging.
+
 ## The problem
 
 Rules like "payments must never import analytics", "the domain layer can't depend on the API
@@ -92,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rakshithmuda22/agentprobe@main
+      - uses: rakshithmuda22/agentprobe@v1
         # all inputs are optional:
         # with:
         #   config_dir: .agentprobe   # where the policy files live
@@ -237,7 +253,8 @@ Layer 2. It authenticates with a token, not as a GitHub App.
   verification.
 * The `action-e2e` CI job builds the Docker image and runs the three sample PRs through it.
 * AgentProbe governs its own PRs ([`.github/workflows/agentprobe.yml`](.github/workflows/agentprobe.yml),
-  policy in [`.agentprobe/`](.agentprobe)): analyzers may not import the GitHub integration layer.
+  policy in [`.agentprobe/`](.agentprobe)): analyzers may not import the GitHub integration layer. See
+  [PR #1](https://github.com/rakshithmuda22/agentprobe/pull/1) for a run that blocked a violation.
 
 ## Limitations and roadmap
 
