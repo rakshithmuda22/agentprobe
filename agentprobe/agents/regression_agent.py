@@ -1,50 +1,59 @@
-"""Regression Agent — detects semantic behavior changes in modified functions.
+"""Regression analyzer — flags behavior changes in functions a PR modifies.
 
-Two active detection layers (Layer 3 is intentionally disabled):
-  Layer 1: Logic Summary Diffing (LLM or deterministic fallback)
-  Layer 2: Property-Based Testing (Hypothesis, only if Layer 1 finds deltas)
-  Layer 3: Behavioral Fingerprinting — DISABLED. Subprocess execution of
-    unvetted PR code is an RCE primitive; it needs a proper sandbox
-    (gVisor / Firecracker), which is out of scope. The call is a no-op.
+Layer 1 — logic-summary diffing (always on, deterministic):
+    For every function present before and after the PR whose source changed,
+    build a structural summary (signature, raise/throw paths, return paths,
+    print/log side effects) and diff the summaries. With ``llm.provider:
+    ollama`` a local model writes the summaries instead (experimental).
+
+Layer 2 — differential property testing (opt-in: ``regression.property_tests``):
+    Only for Python functions where Layer 1 found a delta. Hypothesis
+    generates inputs, runs the before *and* after version on each one in an
+    isolated subprocess, and shrinks to the smallest input where they differ.
+    This executes PR code, so it is off by default and always refused when the
+    caller sets ``allow_code_execution=False`` (e.g. ``pull_request_target``).
+
+An earlier "Layer 3" (timing fingerprints by executing code without any
+isolation) was removed; see README roadmap.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
 import textwrap
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
-
-# Security limits
-MAX_FUNCTION_SOURCE_LEN = 50_000  # max chars for a single function source
-MAX_FUNCTION_NAME_LEN = 200
-FUNCTION_NAME_PATTERN = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+from pathlib import Path, PurePosixPath
 
 import httpx
 
 from agentprobe.cache.hash_utils import cache_key, function_hash
 from agentprobe.cache.memory_cache import MemoryCache
-from agentprobe.config.loader import load_config
+from agentprobe.config.loader import RegressionConfig, load_config, policy_dir
 from agentprobe.graph.state import AgentProbeState
 from agentprobe.parsers.diff_parser import parse_diff
 from agentprobe.parsers.tree_sitter_engine import TreeSitterEngine
 
+# Security / DoS limits
+MAX_FUNCTION_SOURCE_LEN = 50_000   # max chars for a single function source
+MAX_MODULE_SOURCE_LEN = 500_000    # max chars for a module sent to Layer 2
+MAX_DIFF_SIZE = 1_000_000          # 1MB
+MAX_FUNCTION_NAME_LEN = 200
+FUNCTION_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+HARNESS_PATH = Path(__file__).with_name("pbt_harness.py")
+RESULT_MARKER = "AGENTPROBE_PBT_RESULT:"
+
+SUMMARY_FIELDS = ("inputs", "error_paths", "return_behavior", "side_effects")
+FIELD_SEVERITY = {"error_paths": "HIGH", "return_behavior": "HIGH",
+                  "inputs": "MEDIUM", "side_effects": "MEDIUM"}
+
 
 # ── Dataclasses ─────────────────────────────────────────────────
-
-
-@dataclass
-class FunctionVersion:
-    """Before/after versions of a modified function."""
-    name: str
-    file_path: str
-    before_source: str
-    after_source: str
 
 
 @dataclass
@@ -56,6 +65,7 @@ class SemanticDelta:
     before: str
     after: str
     severity: str  # "HIGH", "MEDIUM", "LOW"
+    summary: str = ""
 
 
 @dataclass
@@ -63,13 +73,12 @@ class RegressionResult:
     """Result from analyzing a single function."""
     function_name: str
     file_path: str
+    line: int = 0  # first line of the function in the post-PR file (0 = unknown)
     deltas: list[SemanticDelta] = field(default_factory=list)
-    property_test_failures: list[str] = field(default_factory=list)
-    fingerprint_divergence: float | None = None
 
 
 def _validate_function_name(name: str) -> bool:
-    """Validate function name to prevent code injection."""
+    """Function names are interpolated into reports and payloads; keep them sane."""
     return (
         bool(name)
         and len(name) <= MAX_FUNCTION_NAME_LEN
@@ -89,23 +98,23 @@ class LogicSummarizer:
     """Summarize function behavior and detect semantic deltas."""
 
     def __init__(self, cache: MemoryCache, llm_base_url: str = "http://localhost:11434",
-                 llm_model: str = "llama3"):
+                 llm_model: str = "llama3", llm_provider: str = "none"):
         self.cache = cache
         self.llm_base_url = llm_base_url
         self.llm_model = llm_model
+        self.llm_provider = (llm_provider or "none").lower()
+        self.llm_calls = 0
 
     def summarize(self, source: str) -> dict:
-        """Generate a behavior summary for a function.
-
-        Uses Ollama if available, falls back to deterministic AST analysis.
-        """
-        h = function_hash(source)
-        key = cache_key("summary", h)
+        """Generate a behavior summary for a function (cached by content hash)."""
+        key = cache_key(f"summary:{self.llm_provider}", function_hash(source))
         cached = self.cache.get(key)
         if cached is not None:
             return cached
 
-        summary = self._try_ollama_summary(source)
+        summary = None
+        if self.llm_provider == "ollama":
+            summary = self._try_ollama_summary(source)
         if summary is None:
             summary = self._deterministic_summary(source)
 
@@ -118,31 +127,28 @@ class LogicSummarizer:
         after_summary = self.summarize(after_source)
 
         deltas = []
-        for field_name in ("error_paths", "side_effects", "return_behavior", "invariants"):
-            before_val = before_summary.get(field_name, "")
-            after_val = after_summary.get(field_name, "")
-            if str(before_val) != str(after_val):
-                severity = "HIGH" if field_name in ("error_paths", "return_behavior") else "MEDIUM"
+        for field_name in SUMMARY_FIELDS:
+            before_val = _render(before_summary.get(field_name, ""))
+            after_val = _render(after_summary.get(field_name, ""))
+            if before_val != after_val:
                 deltas.append(SemanticDelta(
                     function_name="",  # Filled by caller
                     file_path="",
                     field=field_name,
-                    before=str(before_val),
-                    after=str(after_val),
-                    severity=severity,
+                    before=before_val,
+                    after=after_val,
+                    severity=FIELD_SEVERITY.get(field_name, "MEDIUM"),
                 ))
         return deltas
 
     def _try_ollama_summary(self, source: str) -> dict | None:
-        """Try to use Ollama for summarization. Returns None if unavailable."""
+        """Ask a local Ollama model for a summary. Returns None if unavailable."""
         prompt = textwrap.dedent(f"""\
             Analyze this function and return a JSON object with these fields:
-            - inputs: list of parameter names and types
-            - outputs: description of return value
+            - inputs: list of parameter names
             - side_effects: list of side effects
             - error_paths: how errors are handled (exceptions raised, None returned, etc)
             - return_behavior: what the function returns in normal and error cases
-            - invariants: properties that should always hold
 
             Function:
             ```
@@ -159,9 +165,9 @@ class LogicSummarizer:
                 timeout=30.0,
             )
             if resp.status_code == 200:
-                response_text = resp.json().get("response", "")
-                return self._parse_json_response(response_text)
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError):
+                self.llm_calls += 1
+                return self._parse_json_response(resp.json().get("response", ""))
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError, ValueError):
             return None
         return None
 
@@ -182,7 +188,7 @@ class LogicSummarizer:
 
     @staticmethod
     def _deterministic_summary(source: str) -> dict:
-        """Deterministic fallback: analyze function structure without LLM."""
+        """Structural summary without an LLM: signature, raise/return paths, I/O calls."""
         lines = source.strip().split("\n")
 
         error_paths = []
@@ -191,197 +197,154 @@ class LogicSummarizer:
 
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith("raise "):
-                error_paths.append(f"raises: {stripped}")
-            elif stripped == "return None" or stripped == "return":
-                error_paths.append("returns None on error")
-                return_behavior.append("returns None")
+            if stripped.startswith(("raise ", "throw ")) or stripped in ("raise", "throw"):
+                error_paths.append(stripped.rstrip(";"))
+            elif stripped in ("return None", "return", "return null", "return undefined",
+                              "return None;", "return;", "return null;"):
+                error_paths.append("returns None")
             elif stripped.startswith("return "):
-                return_behavior.append(stripped)
-            elif "print(" in stripped or "log(" in stripped:
-                side_effects.append(stripped)
+                return_behavior.append(stripped.rstrip(";"))
+            if re.search(r"\b(print|console\.log|logger\.\w+|logging\.\w+)\s*\(", stripped):
+                side_effects.append(stripped.rstrip(";"))
 
-        # Extract parameters
         inputs = []
-        if lines and "def " in lines[0]:
+        if lines:
             param_match = re.search(r'\((.*?)\)', lines[0])
             if param_match:
-                params = param_match.group(1)
                 inputs = [p.strip().split(":")[0].strip().split("=")[0].strip()
-                         for p in params.split(",") if p.strip() and p.strip() != "self"]
+                          for p in param_match.group(1).split(",")
+                          if p.strip() and p.strip() not in ("self", "cls")]
 
         return {
             "inputs": inputs,
-            "outputs": return_behavior or ["unknown"],
             "side_effects": side_effects,
             "error_paths": error_paths or ["none detected"],
             "return_behavior": return_behavior or ["unknown"],
-            "invariants": [],
         }
 
 
-# ── Layer 2: Property-Based Testing ────────────────────────────
+def _render(value) -> str:
+    """Human-readable, order-preserving rendering of a summary field."""
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(v) for v in value) if value else "none"
+    return str(value)
 
 
-class PropertyTestGenerator:
-    """Generate and run Hypothesis property tests for functions with deltas."""
+# ── Layer 2: Differential Property Testing ──────────────────────
 
-    def generate_and_run(self, function_source: str, function_name: str,
-                         deltas: list[SemanticDelta]) -> list[str]:
-        """Generate property tests based on deltas, run them, return failures."""
-        if not deltas:
-            return []
 
-        if not _validate_function_name(function_name):
-            return [f"Invalid function name: {function_name!r}"]
-        if not _validate_source(function_source):
-            return ["Function source too large or empty"]
+CHILD_CPU_SECONDS = 60
 
-        test_code = self._generate_test_code(function_source, function_name, deltas)
-        if not test_code:
-            return []
 
-        return self._run_tests(test_code)
+def _drop_privileges() -> None:  # pragma: no cover - runs in the child process
+    """preexec_fn: resource limits, and an unprivileged uid when running as root."""
+    try:
+        import resource
 
-    def _generate_test_code(self, function_source: str, function_name: str,
-                            deltas: list[SemanticDelta]) -> str:
-        """Generate Hypothesis test code as a Python string."""
-        test_parts = [
-            "from hypothesis import given, strategies as st, settings",
-            "",
-            "# Function under test",
-            function_source,
-            "",
-        ]
-
-        test_count = 0
-        for delta in deltas:
-            if delta.field == "error_paths" and "raises" in delta.before:
-                test_parts.append(textwrap.dedent(f"""\
-                    @settings(max_examples=20)
-                    @given(x=st.integers(max_value=-1))
-                    def test_{function_name}_error_path_{test_count}(x):
-                        result = {function_name}(x)
-                        assert result is not None, "Function returns None instead of raising"
-                """))
-                test_count += 1
-            elif delta.field == "return_behavior":
-                test_parts.append(textwrap.dedent(f"""\
-                    @settings(max_examples=20)
-                    @given(x=st.integers(min_value=1, max_value=1000))
-                    def test_{function_name}_return_behavior_{test_count}(x):
-                        result = {function_name}(x)
-                        assert result is not None, "Function should return a value for valid input"
-                """))
-                test_count += 1
-
-        if test_count == 0:
-            return ""
-
-        return "\n".join(test_parts)
-
-    @staticmethod
-    def _run_tests(test_code: str) -> list[str]:
-        """Write tests to a temp file and run with pytest."""
-        failures = []
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(test_code)
-            f.flush()
+        for limit, value in ((resource.RLIMIT_CPU, CHILD_CPU_SECONDS),
+                             (resource.RLIMIT_AS, 2 * 1024 ** 3),
+                             (resource.RLIMIT_FSIZE, 50 * 1024 ** 2)):
             try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pytest", f.name, "-v", "--tb=short", "--no-header"],
+                resource.setrlimit(limit, (value, value))
+            except (ValueError, OSError):
+                pass
+    except ImportError:
+        pass
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        os.setgroups([])
+        os.setgid(65534)  # nogroup
+        os.setuid(65534)  # nobody
+
+
+class PropertyTestRunner:
+    """Run the differential Hypothesis harness for one file in a subprocess."""
+
+    def __init__(self, max_examples: int = 200, timeout: int = 60):
+        self.max_examples = max_examples
+        self.timeout = timeout
+        self.runs = 0
+
+    def run(self, file_path: str, before_source: str, after_source: str,
+            functions: list[str], repo_root: str | None) -> list[dict]:
+        functions = [f for f in functions if _validate_function_name(f)]
+        if not functions:
+            return []
+        if len(before_source) > MAX_MODULE_SOURCE_LEN or len(after_source) > MAX_MODULE_SOURCE_LEN:
+            return [{"function": f, "status": "skipped", "reason": "module too large"}
+                    for f in functions]
+
+        package = ".".join(PurePosixPath(file_path).parent.parts)
+        payload = {
+            "file_path": file_path,
+            "package": package,
+            "before_source": before_source,
+            "after_source": after_source,
+            "functions": functions,
+            "max_examples": self.max_examples,
+            "repo_root": str(Path(repo_root).resolve()) if repo_root else None,
+        }
+        with tempfile.TemporaryDirectory(prefix="agentprobe-pbt-") as tmp:
+            os.chmod(tmp, 0o1777)  # writable by the unprivileged child uid
+            payload_path = Path(tmp) / "payload.json"
+            payload_path.write_text(json.dumps(payload))
+            os.chmod(payload_path, 0o644)
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "HOME": tmp,
+                "LANG": "C.UTF-8",
+            }
+            self.runs += 1
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-I", str(HARNESS_PATH), str(payload_path)],
+                    cwd=tmp,
+                    env=env,
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=self.timeout,
+                    preexec_fn=_drop_privileges if os.name == "posix" else None,
                 )
-                if result.returncode != 0:
-                    for line in result.stdout.split("\n"):
-                        if "FAILED" in line:
-                            failures.append(line.strip())
-                    if not failures and result.stderr:
-                        failures.append(f"Test execution error: {result.stderr[:200]}")
             except subprocess.TimeoutExpired:
-                failures.append("Property tests timed out")
-            finally:
-                Path(f.name).unlink(missing_ok=True)
+                return [{"function": f, "status": "skipped",
+                         "reason": f"timed out after {self.timeout}s"} for f in functions]
 
-        return failures
+        for line in reversed(proc.stdout.splitlines()):
+            if line.startswith(RESULT_MARKER):
+                try:
+                    return json.loads(line[len(RESULT_MARKER):])
+                except json.JSONDecodeError:
+                    break
+        error = (proc.stderr.strip().splitlines() or ["no output"])[-1][:200]
+        return [{"function": f, "status": "skipped", "reason": f"harness failed: {error}"}
+                for f in functions]
 
 
-# ── Layer 3: Behavioral Fingerprinting ──────────────────────────
+def _describe_outcome(outcome: list) -> str:
+    kind, value = outcome[0], outcome[1]
+    return f"raised {value}" if kind == "raised" else f"returned {value}"
 
 
-class BehavioralFingerprinter:
-    """Compare function behavior via execution with canonical inputs."""
+# ── Function pairing ────────────────────────────────────────────
 
-    def __init__(self, timing_threshold: float = 0.20):
-        self.timing_threshold = timing_threshold
 
-    def fingerprint(self, before_source: str, after_source: str,
-                    function_name: str, test_inputs: list[dict] | None = None) -> float | None:
-        """Execute both versions and compare outputs + timing.
+def _functions_by_name(engine: TreeSitterEngine, source: str,
+                       language: str) -> dict[str, tuple[str, int]]:
+    """{name: (source, first line)} for every function (first definition wins)."""
+    lines = source.split("\n")
+    out: dict[str, tuple[str, int]] = {}
+    for func in engine.extract_functions(source, language):
+        if func.name in out:
+            continue
+        out[func.name] = ("\n".join(lines[func.line_start - 1: func.line_end]),
+                          func.line_start)
+    return out
 
-        Returns the timing divergence ratio, or None if comparison not possible.
-        """
-        if not _validate_function_name(function_name):
-            return None
-        if not _validate_source(before_source) or not _validate_source(after_source):
-            return None
 
-        # Identical sources always match outputs; skip timing noise from subprocess runs.
-        if before_source == after_source:
-            return 0.0
-
-        if test_inputs is None:
-            test_inputs = [
-                {"args": [1], "kwargs": {}},
-                {"args": [100], "kwargs": {}},
-                {"args": [-1], "kwargs": {}},
-                {"args": [0], "kwargs": {}},
-            ]
-
-        before_results = self._execute_function(before_source, function_name, test_inputs)
-        after_results = self._execute_function(after_source, function_name, test_inputs)
-
-        if before_results is None or after_results is None:
-            return None
-
-        # Compare outputs
-        output_mismatches = 0
-        for (b_out, _b_time), (a_out, _a_time) in zip(before_results, after_results):
-            if str(b_out) != str(a_out):
-                output_mismatches += 1
-
-        # Calculate timing divergence
-        before_total = sum(t for _, t in before_results)
-        after_total = sum(t for _, t in after_results)
-
-        if before_total > 0:
-            divergence = abs(after_total - before_total) / before_total
-        else:
-            divergence = 0.0
-
-        if output_mismatches > 0:
-            return max(divergence, 1.0)
-
-        return divergence
-
-    @staticmethod
-    def _execute_function(source: str, function_name: str,
-                          inputs: list[dict]) -> list[tuple] | None:
-        """SECURITY: disabled.
-
-        Executing untrusted code from pull requests inside the governance
-        runner would be a remote-code-execution primitive — any PR could
-        ship a malicious function body and have it run against the Action's
-        GITHUB_TOKEN. Layer 3 is disabled until this runs inside a proper
-        sandbox (gVisor / Firecracker / ephemeral container without
-        repo secrets). Layers 1 and 2 still provide useful signal.
-
-        Returns None so the fingerprint() caller falls through to
-        "comparison not possible".
-        """
-        return None
+def _is_critical(file_path: str, cfg: RegressionConfig) -> bool:
+    if not cfg.critical_dirs:
+        return True
+    return any(file_path == d.rstrip("/") or file_path.startswith(d.rstrip("/") + "/")
+               for d in cfg.critical_dirs)
 
 
 # ── Main Agent ──────────────────────────────────────────────────
@@ -391,17 +354,10 @@ _global_cache = MemoryCache()
 
 
 def run(state: AgentProbeState) -> AgentProbeState:
-    """Run semantic regression detection on modified functions.
-
-    Layer 1: Logic Summary Diffing (Ollama or deterministic fallback)
-    Layer 2: Property-Based Testing (only if deltas found)
-    Layer 3: Behavioral Fingerprinting — disabled (no-op; see module docstring)
-    """
+    """Run semantic regression detection on modified functions."""
     pr_diff = state.get("pr_diff", "")
-    repo_path = state.get("repo_path", ".")
+    cost_tracker = state.get("cost_tracker", {})
 
-    # Security: reject excessively large diffs to prevent DoS
-    MAX_DIFF_SIZE = 1_000_000  # 1MB
     if len(pr_diff) > MAX_DIFF_SIZE:
         state["regression_report"] = {
             "status": "WARN",
@@ -409,148 +365,132 @@ def run(state: AgentProbeState) -> AgentProbeState:
                         "before": "normal", "after": f"diff too large ({len(pr_diff)} bytes)",
                         "severity": "MEDIUM"}],
             "confidence": 1.0,
+            "notes": [],
         }
         return state
 
-    config = load_config(Path(repo_path) / ".agentprobe" / "config.yaml")
+    config = load_config(policy_dir(state) / "config.yaml")
+    rcfg = config.regression
     diff_result = parse_diff(pr_diff)
     engine = TreeSitterEngine()
+    file_sources = state.get("file_sources") or {}
 
     summarizer = LogicSummarizer(
         cache=_global_cache,
         llm_base_url=config.llm.base_url,
         llm_model=config.llm.model,
+        llm_provider=config.llm.provider,
     )
-    property_tester = PropertyTestGenerator()
-    fingerprinter = BehavioralFingerprinter(
-        timing_threshold=config.regression.timing_divergence_threshold,
-    )
+    pbt = PropertyTestRunner(rcfg.property_test_examples, rcfg.property_test_timeout_seconds)
+    allow_exec = state.get("allow_code_execution", True)
+    notes: list[str] = []
+    if rcfg.property_tests and not allow_exec:
+        notes.append("Property tests are enabled in config but were not run: this event "
+                     "context must not execute PR code (e.g. pull_request_target).")
 
     all_results: list[RegressionResult] = []
-    cost_tracker = state.get("cost_tracker", {})
-    llm_calls = 0
+    compared = 0
+    budget_hit = False
 
     for file_change in diff_result.files:
         language = engine.detect_language(file_change.file_path)
-        if language is None:
+        if language is None or file_change.status in ("added", "deleted"):
             continue
 
-        # Before = deleted lines, After = added lines
-        before_source = "\n".join(line for _, line in file_change.deleted_lines)
-        after_source = "\n".join(line for _, line in file_change.added_lines)
-
-        if not before_source.strip() or not after_source.strip():
+        full = file_sources.get(file_change.file_path) or {}
+        have_full = full.get("before") is not None and full.get("after") is not None
+        if have_full:
+            before_module, after_module = full["before"], full["after"]
+        else:  # no full files available: reconstruct what the hunks show
+            before_module, after_module = file_change.fragment("-"), file_change.fragment("+")
+        if not before_module.strip() or not after_module.strip():
             continue
 
         try:
-            before_funcs = {f.name: f for f in engine.extract_functions(before_source, language)}
-            after_funcs = {f.name: f for f in engine.extract_functions(after_source, language)}
+            before_funcs = _functions_by_name(engine, before_module, language)
+            after_funcs = _functions_by_name(engine, after_module, language)
         except Exception:
             continue
 
-        # Find functions that exist in both versions (modified)
-        common_funcs = set(before_funcs.keys()) & set(after_funcs.keys())
-
-        for func_name in common_funcs:
-            if llm_calls >= config.regression.max_llm_calls_per_pr:
-                break
-
-            before_func_source = _extract_func_source(before_source, before_funcs[func_name])
-            after_func_source = _extract_func_source(after_source, after_funcs[func_name])
-
-            if before_func_source == after_func_source:
+        changed: list[str] = []
+        for func_name in sorted(set(before_funcs) & set(after_funcs)):
+            before_src, after_src = before_funcs[func_name][0], after_funcs[func_name][0]
+            if before_src == after_src:
                 continue
+            if not (_validate_source(before_src) and _validate_source(after_src)):
+                continue
+            if compared >= rcfg.max_functions_per_pr:
+                budget_hit = True
+                break
+            compared += 1
 
-            result = RegressionResult(
-                function_name=func_name,
-                file_path=file_change.file_path,
-            )
-
-            # Layer 1: Logic Summary Diffing
-            deltas = summarizer.compare(before_func_source, after_func_source)
-            for d in deltas:
+            result = RegressionResult(function_name=func_name, file_path=file_change.file_path,
+                                      line=after_funcs[func_name][1] if have_full else 0)
+            for d in summarizer.compare(before_src, after_src):
                 d.function_name = func_name
                 d.file_path = file_change.file_path
-            result.deltas = deltas
-            llm_calls += 1
-
-            # Layer 2: Property-Based Testing (only if deltas found)
-            if deltas:
-                failures = property_tester.generate_and_run(
-                    after_func_source, func_name, deltas
-                )
-                result.property_test_failures = failures
-
-            # Layer 3: Behavioral Fingerprinting (only for critical dirs)
-            is_critical = any(
-                file_change.file_path.startswith(d)
-                for d in config.regression.critical_dirs
-            )
-            if is_critical:
-                divergence = fingerprinter.fingerprint(
-                    before_func_source, after_func_source, func_name
-                )
-                result.fingerprint_divergence = divergence
-
+                result.deltas.append(d)
             all_results.append(result)
+            if result.deltas:
+                changed.append(func_name)
 
-    # Aggregate results
+        if (changed and rcfg.property_tests and allow_exec and language == "python"
+                and _is_critical(file_change.file_path, rcfg)):
+            by_name = {r.function_name: r for r in all_results
+                       if r.file_path == file_change.file_path}
+            for res in pbt.run(file_change.file_path, before_module, after_module, changed,
+                               state.get("repo_path")):
+                name = res.get("function", "")
+                target = by_name.get(name)
+                if target is None:
+                    continue
+                if res.get("status") == "diverged":
+                    summary = (f"Hypothesis found `{res['call']}`: before "
+                               f"{_describe_outcome(res['before'])}, after "
+                               f"{_describe_outcome(res['after'])}")
+                    target.deltas.append(SemanticDelta(
+                        function_name=name, file_path=file_change.file_path,
+                        field="property_test", before=_describe_outcome(res["before"]),
+                        after=_describe_outcome(res["after"]), severity="HIGH",
+                        summary=summary,
+                    ))
+                elif res.get("status") == "equivalent":
+                    notes.append(f"Property test: `{name}` behaved identically before/after "
+                                 f"on {res.get('examples')} generated inputs.")
+                else:
+                    notes.append(f"Property test skipped for `{name}`: {res.get('reason')}.")
+
+    if budget_hit:
+        notes.append(f"Stopped after {rcfg.max_functions_per_pr} functions "
+                     "(regression.max_functions_per_pr).")
+
     all_deltas = []
-    has_issues = False
     for r in all_results:
         for d in r.deltas:
-            all_deltas.append({
+            entry = {
                 "function": d.function_name,
                 "file": d.file_path,
+                "line": r.line,
                 "field": d.field,
                 "before": d.before,
                 "after": d.after,
                 "severity": d.severity,
-            })
-            if d.severity == "HIGH":
-                has_issues = True
+            }
+            if d.summary:
+                entry["summary"] = d.summary
+            all_deltas.append(entry)
 
-        if r.property_test_failures:
-            has_issues = True
-            for f in r.property_test_failures:
-                all_deltas.append({
-                    "function": r.function_name,
-                    "file": r.file_path,
-                    "field": "property_test",
-                    "before": "passing",
-                    "after": f,
-                    "severity": "HIGH",
-                })
+    status = "WARN" if all_deltas else "PASS"
 
-        if (r.fingerprint_divergence is not None
-                and r.fingerprint_divergence > fingerprinter.timing_threshold):
-            has_issues = True
-            all_deltas.append({
-                "function": r.function_name,
-                "file": r.file_path,
-                "field": "behavioral_fingerprint",
-                "before": "baseline",
-                "after": f"divergence: {r.fingerprint_divergence:.2%}",
-                "severity": "MEDIUM" if r.fingerprint_divergence < 1.0 else "HIGH",
-            })
-
-    status = "WARN" if has_issues else "PASS"
-    confidence = 0.85 if llm_calls > 0 else 1.0
-
-    cost_tracker["regression_llm_calls"] = llm_calls
+    cost_tracker["regression_llm_calls"] = summarizer.llm_calls
+    cost_tracker["regression_functions_compared"] = compared
+    cost_tracker["regression_property_test_runs"] = pbt.runs
     state["cost_tracker"] = cost_tracker
 
     state["regression_report"] = {
         "status": status,
         "deltas": all_deltas,
-        "confidence": confidence,
+        "confidence": 1.0 if summarizer.llm_calls == 0 else 0.85,
+        "notes": notes,
     }
     return state
-
-
-def _extract_func_source(full_source: str, func_def) -> str:
-    """Extract a function's source code from the full source."""
-    lines = full_source.split("\n")
-    start = func_def.line_start - 1
-    end = func_def.line_end
-    return "\n".join(lines[start:end])

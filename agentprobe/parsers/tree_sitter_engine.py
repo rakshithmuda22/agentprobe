@@ -33,6 +33,7 @@ class ImportStmt:
     module_path: str
     imported_names: list[str] = field(default_factory=list)
     line_number: int = 0
+    top_level: bool = True  # False for imports inside functions/classes/blocks
 
 
 EXTENSION_TO_LANGUAGE = {
@@ -194,8 +195,12 @@ class TreeSitterEngine:
     def extract_imports(self, source: str, language: str) -> list[ImportStmt]:
         """Extract import statements from source code."""
         tree = self.parse_source(source, language)
-        imports = []
+        imports: list[ImportStmt] = []
         self._walk_for_imports(tree.root_node, language, imports)
+        root = tree.root_node
+        top_lines = {child.start_point[0] + 1 for child in root.children}
+        for imp in imports:
+            imp.top_level = imp.line_number in top_lines
         return imports
 
     def _walk_for_imports(self, node, language: str, results: list[ImportStmt]) -> None:

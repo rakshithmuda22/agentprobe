@@ -1,5 +1,7 @@
 """Tests for the Verdict Orchestrator."""
 
+from pathlib import Path
+
 import pytest
 
 from agentprobe.agents.verdict_orchestrator import run, build_comment, STATUS_SCORES
@@ -9,7 +11,7 @@ from agentprobe.graph.state import AgentProbeState
 def _make_state(**overrides) -> AgentProbeState:
     base = AgentProbeState(
         pr_diff="",
-        repo_path=".",
+        repo_path=str(Path(__file__).parent / "fixtures" / "sample_policy"),
         pr_number=1,
         repo_full_name="owner/repo",
         architecture_report=None,
@@ -35,16 +37,23 @@ class TestVerdictScoring:
         assert result["verdict"]["status"] == "PASS"
         assert result["verdict"]["score"] == 0.0
 
-    def test_block_verdict_high_score(self):
+    def test_any_fatal_finding_blocks(self):
+        """A FATAL finding blocks even without the short-circuit flag."""
         state = _make_state(
             architecture_report={"status": "FATAL", "violations": [{"file_path": "a.py", "line_number": 1, "description": "bad", "severity": "FATAL"}]},
             pattern_report={"status": "WARN", "violations": []},
             regression_report={"status": "WARN", "deltas": [], "confidence": 0.8},
         )
         result = run(state)
-        # arch FATAL=100*0.40=40, pattern WARN=50*0.25=12.5, regression WARN=50*0.35=17.5 = 70
-        # 70 is not > 70, but short_circuit is False here so it would be WARN
-        assert result["verdict"]["status"] == "WARN"
+        assert result["verdict"]["status"] == "BLOCK"
+        assert result["verdict"]["score"] == 100.0
+
+    def test_fatal_forbidden_pattern_blocks(self):
+        state = _make_state(
+            architecture_report={"status": "PASS", "violations": []},
+            pattern_report={"status": "FATAL", "violations": [{"file_path": "a.py", "line_number": 3, "description": "eval", "severity": "FATAL"}]},
+        )
+        assert run(state)["verdict"]["status"] == "BLOCK"
 
     def test_short_circuit_forces_block(self):
         state = _make_state(
@@ -57,15 +66,39 @@ class TestVerdictScoring:
         assert result["verdict"]["status"] == "BLOCK"
         assert result["verdict"]["score"] >= 100.0
 
-    def test_warn_verdict_moderate_score(self):
+    def test_single_finding_is_never_silently_passed(self):
+        """One naming violation must surface as WARN (it used to score 12.5 -> PASS)."""
         state = _make_state(
             architecture_report={"status": "PASS", "violations": []},
             pattern_report={"status": "WARN", "violations": [{"file_path": "b.py", "line_number": 5, "description": "wrong naming", "severity": "WARN"}]},
-            regression_report={"status": "WARN", "deltas": [{"function": "foo", "field": "return_type", "severity": "WARN", "before": "int", "after": "None"}], "confidence": 0.9},
+            regression_report={"status": "PASS", "deltas": [], "confidence": 1.0},
         )
         result = run(state)
-        # arch 0 + pattern 50*0.25=12.5 + regression 50*0.35=17.5 = 30 → PASS (<=40)
-        assert result["verdict"]["status"] == "PASS"
+        # pattern 20 points * 0.25 = 5.0 > warn threshold 0
+        assert result["verdict"]["score"] == 5.0
+        assert result["verdict"]["status"] == "WARN"
+
+    def test_warn_threshold_is_configurable(self, tmp_path):
+        (tmp_path / ".agentprobe").mkdir()
+        (tmp_path / ".agentprobe" / "config.yaml").write_text("thresholds:\n  warn: 10\n")
+        state = _make_state(
+            repo_path=str(tmp_path),
+            pattern_report={"status": "WARN", "violations": [{"file_path": "b.py", "line_number": 5, "description": "n", "severity": "WARN"}]},
+        )
+        assert run(state)["verdict"]["status"] == "PASS"
+
+    def test_many_warnings_escalate_to_block(self):
+        many = [{"file_path": "f.py", "line_number": i, "description": "x", "severity": "WARN"} for i in range(5)]
+        high = [{"function": "f", "field": "error_paths", "severity": "HIGH"} for _ in range(3)]
+        state = _make_state(
+            architecture_report={"status": "WARN", "violations": many},
+            pattern_report={"status": "WARN", "violations": many},
+            regression_report={"status": "WARN", "deltas": high, "confidence": 1.0},
+        )
+        result = run(state)
+        # 100*0.40 + 100*0.25 + 100*0.35 = 100 > 70
+        assert result["verdict"]["status"] == "BLOCK"
+        assert result["verdict"]["analyzer_scores"] == {"architecture": 100.0, "pattern": 100.0, "regression": 100.0}
 
     def test_all_fatal_gives_block(self):
         state = _make_state(
@@ -74,7 +107,6 @@ class TestVerdictScoring:
             regression_report={"status": "BLOCK", "deltas": [], "confidence": 0.5},
         )
         result = run(state)
-        # arch 100*0.40=40 + pattern 50*0.25=12.5 + regression 100*0.35=35 = 87.5 > 70 → BLOCK
         assert result["verdict"]["status"] == "BLOCK"
         assert result["verdict"]["score"] > 70
 

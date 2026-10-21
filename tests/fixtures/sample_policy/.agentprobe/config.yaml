@@ -1,0 +1,21 @@
+thresholds:
+  block: 70
+  warn: 0
+
+weights:
+  architecture: 0.40
+  pattern: 0.25
+  regression: 0.35
+
+regression:
+  critical_dirs: ["src/payments", "src/auth"]
+  max_functions_per_pr: 20
+
+cache:
+  backend: memory
+  ttl_seconds: 86400
+
+llm:
+  provider: none
+  model: llama3
+  base_url: "http://localhost:11434"

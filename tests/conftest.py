@@ -31,7 +31,7 @@ def minimal_state() -> AgentProbeState:
     """Create a minimal AgentProbeState with mock data."""
     return AgentProbeState(
         pr_diff="",
-        repo_path=".",
+        repo_path=str(FIXTURES_DIR / "sample_policy"),
         pr_number=1,
         repo_full_name="test/repo",
         architecture_report=None,

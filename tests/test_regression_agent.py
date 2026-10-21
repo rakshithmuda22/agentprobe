@@ -1,15 +1,16 @@
-"""Tests for the Regression Agent."""
+"""Tests for the regression analyzer (Layer 1 summary diff, Layer 2 property tests)."""
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
+import pytest
+
+from agentprobe.agents import pbt_harness
 from agentprobe.agents.regression_agent import (
     LogicSummarizer,
-    PropertyTestGenerator,
-    BehavioralFingerprinter,
-    SemanticDelta,
+    PropertyTestRunner,
     run,
     _global_cache,
 )
@@ -18,15 +19,14 @@ from agentprobe.graph.state import AgentProbeState
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "semantic_regression_repo"
+SAMPLE_REPO = str(Path(__file__).parent / "fixtures" / "sample_policy")
 
 BEFORE_PAYMENT = (FIXTURES / "before" / "process_payment.py").read_text()
 AFTER_PAYMENT = (FIXTURES / "after" / "process_payment.py").read_text()
-BEFORE_SORT = (FIXTURES / "before" / "sort_items.py").read_text()
-AFTER_SORT = (FIXTURES / "after" / "sort_items.py").read_text()
 
 
-def _make_state(pr_diff: str, repo_path: str = ".") -> AgentProbeState:
-    return AgentProbeState(
+def _make_state(pr_diff: str, repo_path: str = SAMPLE_REPO, **extra) -> AgentProbeState:
+    state = AgentProbeState(
         pr_diff=pr_diff,
         repo_path=repo_path,
         pr_number=1,
@@ -39,6 +39,34 @@ def _make_state(pr_diff: str, repo_path: str = ".") -> AgentProbeState:
         cached_functions=[],
         cost_tracker={},
     )
+    state.update(extra)
+    return state
+
+
+def _policy(tmp_path: Path, config: str) -> str:
+    d = tmp_path / ".agentprobe"
+    d.mkdir(exist_ok=True)
+    (d / "config.yaml").write_text(config)
+    return str(tmp_path)
+
+
+# A body-only edit: the `def` line is far outside the 3-line hunk context.
+BODY_ONLY_DIFF = """\
+diff --git a/src/payments/process_payment.py b/src/payments/process_payment.py
+--- a/src/payments/process_payment.py
++++ b/src/payments/process_payment.py
+@@ -9,6 +9,6 @@ def process_payment(amount, currency="USD"):
+     \"\"\"Process a payment. Raises PaymentError on invalid amount.\"\"\"
+     if amount <= 0:
+-        raise PaymentError(f"Invalid amount: {amount}")
++        return None
+     if not isinstance(amount, (int, float)):
+-        raise PaymentError(f"Amount must be numeric, got {type(amount)}")
++        return None
+     return {"status": "ok", "amount": amount, "currency": currency}
+"""
+FULL_SOURCES = {"src/payments/process_payment.py": {"before": BEFORE_PAYMENT,
+                                                    "after": AFTER_PAYMENT}}
 
 
 # ── Layer 1: Logic Summary Diffing ──────────────────────────────
@@ -50,7 +78,6 @@ class TestLogicSummarizer:
         self.summarizer = LogicSummarizer(self.cache)
 
     def test_deterministic_summary_detects_raise(self):
-        """Deterministic summary should detect 'raise' statements."""
         source = """\
 def process_payment(amount, currency="USD"):
     if amount <= 0:
@@ -58,11 +85,10 @@ def process_payment(amount, currency="USD"):
     return {"status": "ok", "amount": amount}
 """
         summary = LogicSummarizer._deterministic_summary(source)
-        assert any("raises" in str(e) for e in summary["error_paths"])
+        assert any("raise PaymentError" in str(e) for e in summary["error_paths"])
         assert summary["inputs"] == ["amount", "currency"]
 
     def test_deterministic_summary_detects_return_none(self):
-        """Deterministic summary should detect 'return None' patterns."""
         source = """\
 def process_payment(amount, currency="USD"):
     if amount <= 0:
@@ -73,153 +99,169 @@ def process_payment(amount, currency="USD"):
         assert any("None" in str(e) for e in summary["error_paths"])
 
     def test_compare_detects_error_path_change(self):
-        """Comparing raise vs return-None should produce a delta."""
-        before = """\
-def process(x):
-    if x < 0:
-        raise ValueError("bad")
-    return x * 2
-"""
-        after = """\
-def process(x):
-    if x < 0:
-        return None
-    return x * 2
-"""
+        before = "def process(x):\n    if x < 0:\n        raise ValueError('bad')\n    return x * 2\n"
+        after = "def process(x):\n    if x < 0:\n        return None\n    return x * 2\n"
         deltas = self.summarizer.compare(before, after)
-        assert len(deltas) > 0
         error_deltas = [d for d in deltas if d.field == "error_paths"]
-        assert len(error_deltas) >= 1
+        assert len(error_deltas) == 1
         assert error_deltas[0].severity == "HIGH"
+        assert error_deltas[0].before == "raise ValueError('bad')"
+        assert error_deltas[0].after == "returns None"
+
+    def test_compare_detects_signature_change(self):
+        deltas = self.summarizer.compare("def f(a):\n    return a\n",
+                                         "def f(a, b):\n    return a\n")
+        assert [d.field for d in deltas] == ["inputs"]
+        assert deltas[0].severity == "MEDIUM"
 
     def test_compare_identical_no_deltas(self):
-        """Comparing identical functions should produce no deltas."""
         source = "def foo(x):\n    return x + 1\n"
-        deltas = self.summarizer.compare(source, source)
-        assert deltas == []
+        assert self.summarizer.compare(source, source) == []
 
     def test_cache_hit(self):
-        """Second call with same source should use cached summary."""
         source = "def foo(x):\n    return x + 1\n"
-        summary1 = self.summarizer.summarize(source)
-        summary2 = self.summarizer.summarize(source)
-        assert summary1 == summary2
-        # Cache should have exactly 1 entry
+        assert self.summarizer.summarize(source) == self.summarizer.summarize(source)
         assert len(self.cache) == 1
 
-    def test_ollama_fallback_on_connection_error(self):
-        """When Ollama is unreachable, should fall back to deterministic."""
-        source = "def foo(x):\n    return x + 1\n"
-        # Default localhost:11434 is not running in test
-        summary = self.summarizer.summarize(source)
-        assert "inputs" in summary
-        assert "error_paths" in summary
+    def test_no_llm_by_default(self):
+        """provider defaults to 'none': no network call, fully deterministic."""
+        self.summarizer.summarize("def foo(x):\n    return x + 1\n")
+        assert self.summarizer.llm_calls == 0
 
 
-# ── Layer 2: Property-Based Testing ─────────────────────────────
-
-
-class TestPropertyTestGenerator:
-    def setup_method(self):
-        self.generator = PropertyTestGenerator()
-
-    def test_generates_valid_python(self):
-        """Generated test code should be valid Python syntax."""
-        deltas = [SemanticDelta(
-            function_name="process",
-            file_path="test.py",
-            field="error_paths",
-            before="raises: ValueError",
-            after="returns None on error",
-            severity="HIGH",
-        )]
-        code = self.generator._generate_test_code(
-            "def process(x):\n    if x < 0:\n        return None\n    return x * 2\n",
-            "process",
-            deltas,
-        )
-        assert code
-        # Check it's valid Python
-        compile(code, "<test>", "exec")
-
-    def test_no_deltas_no_tests(self):
-        """No deltas should produce no test code."""
-        result = self.generator.generate_and_run("def foo(x): return x", "foo", [])
-        assert result == []
-
-
-# ── Layer 3: Behavioral Fingerprinting ──────────────────────────
-
-
-class TestBehavioralFingerprinter:
-    def setup_method(self):
-        self.fingerprinter = BehavioralFingerprinter(timing_threshold=0.20)
-
-    def test_identical_functions_low_divergence(self):
-        """Identical functions should have near-zero divergence."""
-        source = "def add(x):\n    return x + 1\n"
-        divergence = self.fingerprinter.fingerprint(source, source, "add")
-        assert divergence is not None
-        assert divergence < 0.5  # Should be very close to 0
-
-    def test_layer3_disabled_returns_none_for_different_sources(self):
-        """Layer 3 is disabled for safety (no sandbox); it must return None
-        rather than execute untrusted PR code."""
-        before = "def calc(x):\n    return x * 2\n"
-        after = "def calc(x):\n    return x * 3\n"
-        divergence = self.fingerprinter.fingerprint(before, after, "calc")
-        assert divergence is None
-
-    def test_layer3_disabled_for_error_change(self):
-        """Same disabled-by-design behavior on error-pattern changes."""
-        before = "def check(x):\n    if x < 0:\n        raise ValueError('bad')\n    return x\n"
-        after = "def check(x):\n    if x < 0:\n        return None\n    return x\n"
-        divergence = self.fingerprinter.fingerprint(before, after, "check")
-        assert divergence is None
-
-
-# ── Full Regression Agent ───────────────────────────────────────
+# ── Full regression analyzer ────────────────────────────────────
 
 
 def test_semantic_change_detected(semantic_change_diff):
     """Modifying error handling should produce WARN with deltas."""
     _global_cache.clear()
-    state = _make_state(semantic_change_diff)
-    result = run(state)
-
-    report = result["regression_report"]
+    report = run(_make_state(semantic_change_diff))["regression_report"]
     assert report["status"] == "WARN"
-    assert len(report["deltas"]) >= 1
+    assert any(d["field"] == "error_paths" for d in report["deltas"])
 
-    # Should detect the error_paths change
-    error_deltas = [d for d in report["deltas"] if d["field"] == "error_paths"]
-    assert len(error_deltas) >= 1
+
+def test_body_only_change_missed_without_full_sources():
+    """Hunks alone don't contain the `def` line, so nothing can be compared."""
+    _global_cache.clear()
+    report = run(_make_state(BODY_ONLY_DIFF))["regression_report"]
+    assert report["deltas"] == []
+
+
+def test_body_only_change_detected_with_full_sources():
+    """With full before/after files the whole function is compared."""
+    _global_cache.clear()
+    report = run(_make_state(BODY_ONLY_DIFF, file_sources=FULL_SOURCES))["regression_report"]
+    fields = {d["field"] for d in report["deltas"] if d["function"] == "process_payment"}
+    assert "error_paths" in fields
+    assert report["status"] == "WARN"
 
 
 def test_clean_modification_passes(clean_import_diff):
-    """A diff with only new code (no before version) should PASS."""
     _global_cache.clear()
-    state = _make_state(clean_import_diff)
-    result = run(state)
-
-    report = result["regression_report"]
+    report = run(_make_state(clean_import_diff))["regression_report"]
     assert report["status"] == "PASS"
     assert report["deltas"] == []
 
 
 def test_empty_diff_passes():
-    """Empty diff should PASS."""
     _global_cache.clear()
-    state = _make_state("")
-    result = run(state)
-
-    assert result["regression_report"]["status"] == "PASS"
+    assert run(_make_state(""))["regression_report"]["status"] == "PASS"
 
 
 def test_cost_tracking(semantic_change_diff):
-    """LLM call count should be tracked in cost_tracker."""
     _global_cache.clear()
-    state = _make_state(semantic_change_diff)
-    result = run(state)
+    result = run(_make_state(semantic_change_diff))
+    assert result["cost_tracker"]["regression_llm_calls"] == 0
+    assert result["cost_tracker"]["regression_functions_compared"] == 1
+    assert result["cost_tracker"]["regression_property_test_runs"] == 0
 
-    assert "regression_llm_calls" in result["cost_tracker"]
+
+def test_function_budget(tmp_path, semantic_change_diff):
+    _global_cache.clear()
+    repo = _policy(tmp_path, "regression:\n  max_functions_per_pr: 0\n")
+    report = run(_make_state(semantic_change_diff, repo))["regression_report"]
+    assert report["deltas"] == []
+    assert any("max_functions_per_pr" in n for n in report["notes"])
+
+
+# ── Layer 2: Differential property tests ────────────────────────
+
+
+PBT_CONFIG = ("regression:\n  property_tests: true\n  critical_dirs: []\n"
+              "  property_test_examples: 50\n")
+
+
+def test_property_tests_off_by_default():
+    _global_cache.clear()
+    result = run(_make_state(BODY_ONLY_DIFF, file_sources=FULL_SOURCES))
+    assert not any(d["field"] == "property_test" for d in result["regression_report"]["deltas"])
+    assert result["cost_tracker"]["regression_property_test_runs"] == 0
+
+
+def test_property_test_finds_minimal_counterexample(tmp_path):
+    _global_cache.clear()
+    repo = _policy(tmp_path, PBT_CONFIG)
+    report = run(_make_state(BODY_ONLY_DIFF, repo, file_sources=FULL_SOURCES))[
+        "regression_report"]
+    pbt = [d for d in report["deltas"] if d["field"] == "property_test"]
+    assert len(pbt) == 1
+    # Hypothesis shrinks to the boundary input; PaymentError is resolved from the module.
+    assert "process_payment(amount=0)" in pbt[0]["summary"]
+    assert pbt[0]["before"] == "raised PaymentError"
+    assert pbt[0]["after"] == "returned None"
+    assert pbt[0]["severity"] == "HIGH"
+
+
+def test_property_tests_refused_when_code_execution_disallowed(tmp_path):
+    _global_cache.clear()
+    repo = _policy(tmp_path, PBT_CONFIG)
+    result = run(_make_state(BODY_ONLY_DIFF, repo, file_sources=FULL_SOURCES,
+                             allow_code_execution=False))
+    report = result["regression_report"]
+    assert not any(d["field"] == "property_test" for d in report["deltas"])
+    assert result["cost_tracker"]["regression_property_test_runs"] == 0
+    assert any("pull_request_target" in n for n in report["notes"])
+
+
+def test_property_test_child_gets_scrubbed_environment(monkeypatch):
+    """Code under test must not see the parent's secrets (e.g. GITHUB_TOKEN)."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_should_not_leak")
+    before = "def peek(x):\n    return None\n"
+    after = "import os\n\ndef peek(x):\n    return os.environ.get('GITHUB_TOKEN')\n"
+    results = PropertyTestRunner(max_examples=10, timeout=60).run(
+        "src/peek.py", before, after, ["peek"], repo_root=None)
+    assert results == [{"function": "peek", "status": "equivalent", "examples": 10}]
+
+
+def test_property_test_skips_methods_and_unknown_types():
+    before = ("class Cart:\n    pass\n\n"
+              "def total(cart: Cart):\n    return 1\n")
+    after = ("class Cart:\n    pass\n\n"
+             "def total(cart: Cart):\n    return 2\n")
+    results = PropertyTestRunner(max_examples=10, timeout=60).run(
+        "src/cart.py", before, after, ["total"], repo_root=None)
+    assert results[0]["status"] == "skipped"
+    assert "cart" in results[0]["reason"]
+
+
+def test_harness_drops_top_level_side_effects():
+    source = ("import os\nimport not_installed_pkg\n"
+              "print('side effect')\nos.system('echo pwned')\n"
+              "def f(x):\n    return x\n")
+    tree = pbt_harness.reduce_module(source, "m.py")
+    kept = [type(n.body[0]).__name__ for n in tree.body]
+    assert kept == ["Import", "Import", "FunctionDef"]
+    ns = pbt_harness.load_version(source, "m.py", "", "after")
+    assert ns["f"](3) == 3
+    assert isinstance(ns["not_installed_pkg"], pbt_harness._Unavailable)
+
+
+@pytest.mark.parametrize("name", ["", "bad name", "x;import os", "a" * 300])
+def test_invalid_function_names_are_never_sent_to_the_harness(name):
+    assert PropertyTestRunner().run("m.py", "def f(): pass", "def f(): pass", [name],
+                                    None) == []
+
+
+def test_reduce_module_output_is_valid_python():
+    tree = pbt_harness.reduce_module(BEFORE_PAYMENT, "p.py")
+    compile(ast.unparse(tree), "p.py", "exec")

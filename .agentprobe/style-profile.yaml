@@ -1,17 +1,15 @@
 naming:
-  functions: camelCase
+  functions: snake_case
   classes: PascalCase
-  files: kebab-case
-  constants: UPPER_SNAKE_CASE
-
+  files: snake_case
 imports:
   order: [builtin, external, internal, relative]
-  max_depth: 3
-
-patterns:
-  error_handling: try-catch-with-typed-errors
-  data_access: repository-pattern
-
 forbidden:
-  - console.log-in-production-code
-  - any-type-in-typescript
+  - name: no-print-in-analyzers
+    pattern: '^\s*print\('
+    files: "src/agents/*_agent.py"
+    message: Analyzers return findings; they don't print
+  - name: no-eval
+    pattern: '\beval\('
+    severity: FATAL
+    message: eval() on repository content is never allowed

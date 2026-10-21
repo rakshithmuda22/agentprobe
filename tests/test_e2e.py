@@ -9,7 +9,10 @@ from agentprobe.graph.state import AgentProbeState
 from agentprobe.graph.workflow import run_agentprobe
 
 
-def _make_state(pr_diff: str, repo_path: str = ".") -> AgentProbeState:
+SAMPLE_REPO = str(Path(__file__).parent / "fixtures" / "sample_policy")
+
+
+def _make_state(pr_diff: str, repo_path: str = SAMPLE_REPO) -> AgentProbeState:
     return AgentProbeState(
         pr_diff=pr_diff,
         repo_path=repo_path,

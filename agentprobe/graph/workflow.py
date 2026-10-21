@@ -1,56 +1,53 @@
-"""LangGraph DAG workflow for AgentProbe."""
+"""LangGraph workflow for AgentProbe.
+
+    architecture ──► pattern ──┬─(no FATAL)──► regression ──► verdict
+                               └─(FATAL)──────────────────────► verdict
+
+Each node is a deterministic analyzer (no LLM). Pattern always runs so a
+blocked PR still gets every style finding in one pass; the slower regression
+analyzer is skipped once a FATAL boundary violation has decided the verdict.
+"""
 
 from __future__ import annotations
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
-from agentprobe.graph.state import AgentProbeState
 from agentprobe.graph.nodes import (
     architecture_node,
     pattern_node,
     regression_node,
     verdict_node,
 )
+from agentprobe.graph.state import AgentProbeState
 
 
 def should_short_circuit(state: AgentProbeState) -> str:
-    """Route after architecture agent: short-circuit on FATAL or continue."""
+    """Route after the pattern analyzer: skip regression if already FATAL."""
     if state.get("short_circuit", False):
         return "verdict_orchestrator"
-    return "parallel_agents"
+    return "regression_agent"
 
 
 def build_graph() -> StateGraph:
-    """Build and compile the AgentProbe LangGraph DAG."""
+    """Build the AgentProbe LangGraph StateGraph."""
     graph = StateGraph(AgentProbeState)
 
-    # Add nodes
     graph.add_node("architecture_agent", architecture_node)
     graph.add_node("pattern_agent", pattern_node)
     graph.add_node("regression_agent", regression_node)
     graph.add_node("verdict_orchestrator", verdict_node)
 
-    # Entry point
     graph.set_entry_point("architecture_agent")
-
-    # Conditional edge after architecture
+    graph.add_edge("architecture_agent", "pattern_agent")
     graph.add_conditional_edges(
-        "architecture_agent",
+        "pattern_agent",
         should_short_circuit,
         {
             "verdict_orchestrator": "verdict_orchestrator",
-            "parallel_agents": "pattern_agent",
+            "regression_agent": "regression_agent",
         },
     )
-
-    # Pattern -> regression -> verdict runs sequentially. LangGraph gives
-    # us typed state passing and a declarative workflow; genuine parallel
-    # fan-out would need state merging and isn't worth the complexity
-    # for a 3-agent pipeline.
-    graph.add_edge("pattern_agent", "regression_agent")
     graph.add_edge("regression_agent", "verdict_orchestrator")
-
-    # Finish
     graph.add_edge("verdict_orchestrator", END)
 
     return graph
@@ -63,5 +60,4 @@ def compile_graph():
 
 def run_agentprobe(state: AgentProbeState) -> AgentProbeState:
     """Run the full AgentProbe pipeline."""
-    app = compile_graph()
-    return app.invoke(state)
+    return compile_graph().invoke(state)

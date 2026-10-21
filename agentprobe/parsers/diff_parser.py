@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Callable
 
 
 @dataclass
@@ -13,6 +14,51 @@ class FileChange:
     status: str  # "added", "modified", "deleted"
     added_lines: list[tuple[int, str]] = field(default_factory=list)   # (line_number, content)
     deleted_lines: list[tuple[int, str]] = field(default_factory=list)  # (line_number, content)
+    # Every hunk line in order as (kind, content), kind in {"+", "-", " "};
+    # ("@", "") marks the start of a new hunk.
+    hunk_lines: list[tuple[str, str]] = field(default_factory=list)
+
+    def added_source(self) -> str:
+        """Only the lines this PR adds, joined (what governance checks inspect)."""
+        return "\n".join(line for _, line in self.added_lines)
+
+    def added_line_number(self, index: int) -> int:
+        """Map a 1-based line in added_source() back to the real file line."""
+        if 1 <= index <= len(self.added_lines):
+            return self.added_lines[index - 1][0]
+        return index
+
+    def code_view(self, full_after: str | None = None) -> "CodeView":
+        """What governance checks should parse for this file.
+
+        With the full post-PR file, parse all of it (so docstrings and
+        multi-line constructs keep their context) and keep only nodes that
+        start on an added line. Without it, parse just the added lines.
+        """
+        if full_after is not None:
+            added = {n for n, _ in self.added_lines}
+            return CodeView(full_after, lambda line: line, lambda line: line in added)
+        return CodeView(self.added_source(), self.added_line_number, lambda line: True)
+
+    def fragment(self, side: str) -> str:
+        """Reconstruct the visible before ("-") or after ("+") side of all hunks,
+        context lines included. Hunks are separated by a blank line."""
+        out: list[str] = []
+        for kind, text in self.hunk_lines:
+            if kind == "@":
+                if out:
+                    out.append("")
+            elif kind == " " or kind == side:
+                out.append(text)
+        return "\n".join(out)
+
+
+@dataclass
+class CodeView:
+    """Source to parse plus helpers to map/filter the line numbers found in it."""
+    source: str
+    to_file_line: Callable[[int], int]
+    is_added: Callable[[int], bool]
 
 
 @dataclass
@@ -77,16 +123,20 @@ def parse_diff(diff_text: str) -> DiffResult:
         if hunk_match:
             old_line_num = int(hunk_match.group(1))
             new_line_num = int(hunk_match.group(2))
+            current_file.hunk_lines.append(("@", ""))
             continue
 
         # Diff content lines
         if line.startswith("+") and not line.startswith("+++"):
             current_file.added_lines.append((new_line_num, line[1:]))
+            current_file.hunk_lines.append(("+", line[1:]))
             new_line_num += 1
         elif line.startswith("-") and not line.startswith("---"):
             current_file.deleted_lines.append((old_line_num, line[1:]))
+            current_file.hunk_lines.append(("-", line[1:]))
             old_line_num += 1
         elif line.startswith(" "):
+            current_file.hunk_lines.append((" ", line[1:]))
             old_line_num += 1
             new_line_num += 1
 

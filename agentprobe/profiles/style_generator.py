@@ -1,12 +1,16 @@
-"""Style profile utilities — case detection, import categorization, profile loading."""
+"""Style profile utilities — case detection, import categorization, forbidden rules."""
 
 from __future__ import annotations
 
+import fnmatch
+import logging
 import re
 import sys
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 # Known Python stdlib modules (subset covering common ones)
@@ -104,9 +108,20 @@ def load_style_profile(path: str | Path = ".agentprobe/style-profile.yaml") -> d
 
 
 def check_name_convention(name: str, expected_convention: str) -> bool:
-    """Check if a name follows the expected naming convention."""
-    actual = detect_case(name)
-    return actual == expected_convention
+    """Check if a name follows the expected naming convention.
+
+    A single lowercase word ("run", "utils") is valid snake_case, camelCase
+    and kebab-case at the same time, so it satisfies any of the three.
+    """
+    if detect_case(name) == expected_convention:
+        return True
+    core = name.strip("_")
+    return (
+        bool(core)
+        and core.isalnum()
+        and core.islower()
+        and expected_convention in ("snake_case", "camelCase", "kebab-case")
+    )
 
 
 def check_import_order(categories: list[str], expected_order: list[str]) -> list[int]:
@@ -131,29 +146,85 @@ def check_import_order(categories: list[str], expected_order: list[str]) -> list
     return violations
 
 
-# Forbidden pattern matchers
+# Built-in forbidden patterns that can be enabled by name in style-profile.yaml.
 FORBIDDEN_PATTERNS = {
     "console.log-in-production-code": re.compile(r"\bconsole\s*\.\s*log\s*\("),
     "any-type-in-typescript": re.compile(r":\s*any\b"),
 }
 
+_VALID_SEVERITIES = {"WARN", "FATAL"}
 
-def check_forbidden_patterns(source: str, forbidden_list: list[str]) -> list[dict]:
+
+def compile_forbidden_rules(forbidden_list: list) -> list[dict]:
+    r"""Normalize the ``forbidden`` section of style-profile.yaml into rules.
+
+    Each entry is either the name of a built-in pattern (see FORBIDDEN_PATTERNS)
+    or a custom rule::
+
+        - name: no-print
+          pattern: '\bprint\('          # Python regex, matched per added line
+          message: Use structlog instead of print()
+          files: "*.py"                   # optional glob (or list of globs)
+          severity: WARN                  # WARN (default) or FATAL (blocks the PR)
+
+    Unknown names and invalid regexes are skipped with a logged warning rather
+    than crashing the run.
+    """
+    rules: list[dict] = []
+    for entry in forbidden_list or []:
+        if isinstance(entry, str):
+            regex = FORBIDDEN_PATTERNS.get(entry)
+            if regex is None:
+                logger.warning("Unknown built-in forbidden pattern %r (skipped)", entry)
+                continue
+            rules.append({"name": entry, "regex": regex, "message": "", "files": [],
+                          "severity": "WARN"})
+        elif isinstance(entry, dict) and entry.get("pattern"):
+            name = str(entry.get("name") or entry["pattern"])
+            try:
+                regex = re.compile(str(entry["pattern"]))
+            except re.error as exc:
+                logger.warning("Invalid regex for forbidden rule %r: %s (skipped)", name, exc)
+                continue
+            files = entry.get("files") or []
+            if isinstance(files, str):
+                files = [files]
+            severity = str(entry.get("severity", "WARN")).upper()
+            rules.append({
+                "name": name,
+                "regex": regex,
+                "message": str(entry.get("message") or ""),
+                "files": [str(f) for f in files],
+                "severity": severity if severity in _VALID_SEVERITIES else "WARN",
+            })
+        else:
+            logger.warning("Ignoring malformed forbidden entry: %r", entry)
+    return rules
+
+
+def check_forbidden_patterns(
+    source: str, forbidden_list: list, file_path: str | None = None
+) -> list[dict]:
     """Scan source code for forbidden patterns.
 
-    Returns list of {pattern, line_number, line_content} for each match.
+    Returns list of {pattern, line_number, line_content, message, severity}
+    for each match. ``line_number`` is 1-based within ``source``.
     """
     matches = []
     lines = source.split("\n")
-    for pattern_name in forbidden_list:
-        regex = FORBIDDEN_PATTERNS.get(pattern_name)
-        if regex is None:
-            continue
+    for rule in compile_forbidden_rules(forbidden_list):
+        if rule["files"] and file_path is not None:
+            name = file_path.rsplit("/", 1)[-1]
+            if not any(fnmatch.fnmatch(file_path, g) or fnmatch.fnmatch(name, g)
+                       for g in rule["files"]):
+                continue
         for i, line in enumerate(lines, 1):
-            if regex.search(line):
+            if rule["regex"].search(line):
                 matches.append({
-                    "pattern": pattern_name,
+                    "pattern": rule["name"],
                     "line_number": i,
                     "line_content": line.strip(),
+                    "message": rule["message"],
+                    "severity": rule["severity"],
                 })
     return matches

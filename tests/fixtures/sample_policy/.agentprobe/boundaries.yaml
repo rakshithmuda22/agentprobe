@@ -1,0 +1,15 @@
+modules:
+  payments:
+    allowed_imports: [shared, utils, types]
+    forbidden_imports: [analytics, marketing, admin]
+  analytics:
+    allowed_imports: [shared, types]
+    forbidden_imports: [payments, auth]
+
+layers:
+  - name: presentation
+    can_import: [application, shared]
+  - name: application
+    can_import: [domain, infrastructure]
+  - name: domain
+    can_import: []

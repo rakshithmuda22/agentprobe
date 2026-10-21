@@ -1,15 +1,17 @@
+# AgentProbe's own architecture rules, enforced on this repo's PRs by
+# .github/workflows/agentprobe.yml. Dependencies flow one way:
+#   parsers/config/cache -> profiles -> agents (analyzers) -> graph -> integrations -> cli
 modules:
-  payments:
-    allowed_imports: [shared, utils, types]
-    forbidden_imports: [analytics, marketing, admin]
-  analytics:
-    allowed_imports: [shared, types]
-    forbidden_imports: [payments, auth]
-
-layers:
-  - name: presentation
-    can_import: [application, shared]
-  - name: application
-    can_import: [domain, infrastructure]
-  - name: domain
-    can_import: []
+  parsers:      {paths: [agentprobe/parsers], allowed_imports: []}
+  config:       {paths: [agentprobe/config], allowed_imports: []}
+  cache:        {paths: [agentprobe/cache], allowed_imports: []}
+  profiles:     {paths: [agentprobe/profiles], allowed_imports: [parsers]}
+  agents:
+    paths: [agentprobe/agents]
+    allowed_imports: [cache, config, graph, parsers, profiles]
+    forbidden_imports: [integrations, cli]   # analyzers never talk to GitHub
+  graph:        {paths: [agentprobe/graph], allowed_imports: [agents]}
+  integrations:
+    paths: [agentprobe/integrations]
+    allowed_imports: [agents, config, graph, parsers]
+  cli:          {paths: [agentprobe/cli.py], allowed_imports: [config, integrations]}
