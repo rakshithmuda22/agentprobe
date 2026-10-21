@@ -1,75 +1,91 @@
 # AgentProbe
 
-[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
-[![LangGraph](https://img.shields.io/badge/LangGraph-Agent_DAG-orange.svg)](https://www.langchain.com/langgraph)
-[![Tests](https://img.shields.io/badge/Tests-90_passing-brightgreen.svg)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/rakshithmuda22/agentprobe/actions/workflows/ci.yml/badge.svg)](https://github.com/rakshithmuda22/agentprobe/actions/workflows/ci.yml)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> Deterministic PR governance as a GitHub Action. Architectural boundaries + naming conventions + import rules checked against your codebase using AST parsing — no LLM judge, no hallucinated findings, no per-PR API cost.
+**A GitHub Action that enforces your architecture rules on every pull request.** It blocks a PR
+that crosses a module boundary, flags naming and forbidden-pattern violations inline on the
+diff, and catches behavior changes, such as a function that used to raise and now returns `None`,
+with a differential property test. It's deterministic: no LLM, no API keys, no per-PR cost.
 
-## Why I Built This
+## The problem
 
-Most AI code-review tools in 2026 ([CodeRabbit](https://www.coderabbit.ai/), [Qodo](https://www.qodo.ai/), [GitHub Copilot code review](https://docs.github.com/en/copilot/using-github-copilot/code-review)) are LLM-first. That's the right call for finding *bugs* — LLMs are genuinely good at that — but the wrong call for *governance*: "this module must not import from analytics," "every service must inherit BaseService," "no new `any` types in TypeScript." Those are deterministic rules, and running them through an LLM adds latency, API cost, and the risk that the model hallucinates a violation (or misses one) on any given PR.
+Rules like "payments must never import analytics", "the domain layer can't depend on the API
+layer" or "no `eval()`" live in a wiki and get enforced by whoever happens to review the PR.
+LLM code reviewers are good at spotting bugs, but they're the wrong tool for rules like these:
+the same PR can get different answers on different runs, and a reviewer that misses a violation
+one time in twenty isn't enforcing anything. These rules are mechanical, so AgentProbe checks
+them mechanically and fails the check when they're broken.
 
-AgentProbe fills the narrow gap: **deterministic AST-based policy enforcement** that runs alongside (not instead of) your LLM reviewer. Architecture and Pattern agents parse the diff, cross-check it against a YAML policy, and emit structured verdicts. Zero LLM calls. Zero API keys required. The Regression agent optionally runs a local Ollama model for semantic diff summaries, but it's not on the critical path.
+## What it checks
 
-## Technical Highlights
+Three analyzers run as nodes of a [LangGraph](https://github.com/langchain-ai/langgraph)
+`StateGraph`, and a verdict node scores the results. None of them calls an LLM.
 
-- **2-layer regression detection:** Logic Summary Diffing (Layer 1) → Property-Based Testing (Layer 2). Layer 3 (Behavioral Fingerprinting by subprocess execution) is disabled — executing unvetted PR code inside a governance runner is an RCE primitive and requires a proper sandbox (gVisor / Firecracker) that is out of scope here
-- **Weighted scoring with short-circuit:** Architecture violations (40%) can auto-BLOCK before Pattern (25%) or Regression (35%) even run
-- **AST-first, not LLM-first:** Architecture and Pattern agents use Tree-sitter for deterministic AST parsing — no API keys, no rate limits, no hallucinated findings
-- **90 pytest tests** covering agents, HMAC webhook verification, parsers, end-to-end workflows, and integration paths
-- **LangGraph state-graph orchestration** with typed state passing, YAML-driven boundary rules, and conditional short-circuit routing
+| Analyzer | What it does | How |
+|---|---|---|
+| **Architecture** | Module allow/deny lists and layer rules from `boundaries.yaml` | Tree-sitter extracts the imports a PR adds (Python, TS/JS, Go); relative imports are resolved against the importing file; stdlib/third-party imports never trip allow-lists |
+| **Pattern** | Function/class/file naming, import order, forbidden regexes from `style-profile.yaml` | Tree-sitter over the full post-PR file, reporting only nodes on added lines (real file line numbers) |
+| **Regression** | Behavior changes in functions the PR modifies | **Layer 1:** structural summary diff of whole before/after functions (signature, raise/return paths, I/O calls). **Layer 2 (opt-in):** Hypothesis runs the before *and* after version on the same generated inputs and shrinks to the smallest input where they differ |
 
-## Architecture
+The policy is read from the PR's **base** commit, so a PR can't loosen the rules it's judged by.
+A PR that edits `.agentprobe/` is flagged for review.
 
-```mermaid
-graph TD
-    A[PR Diff] --> B[Architecture Agent]
-    B -->|FATAL| F[Verdict Orchestrator]
-    B -->|PASS/WARN| C[Pattern Agent]
-    C --> D[Regression Agent]
-    D --> F
-    F --> G[GitHub PR Comment + Check Status]
+## Example (real output)
 
-    subgraph "2-Layer Regression Detection"
-        D1[Layer 1: Logic Summary Diffing]
-        D2[Layer 2: Property-Based Testing]
-        D1 -->|deltas found| D2
-    end
+This is the output of `scripts/e2e_action.py`, which builds the action's Docker image, creates a
+git repo from [`examples/acme-shop`](examples/acme-shop) with three PRs, and runs the container
+the way the Actions runner does, against a local stub of the GitHub API:
+
+```
+=== PR #1 1-refund-tracking (docker) ===
+AgentProbe verdict: BLOCK (score 100.0/100, policy from base)
+::error file=src/payments/refunds.py,line=3,title=AgentProbe::[architecture] Module 'payments' is forbidden from importing 'analytics'
+::warning file=src/payments/refunds.py,line=7,title=AgentProbe::[pattern] Function 'issueRefund' is camelCase, expected snake_case
+exit code: 1 | outputs: verdict=BLOCK score=100.0 | commit status: failure | OK
+
+=== PR #2 2-lenient-charge (docker) ===
+AgentProbe verdict: WARN (score 33.0/100, policy from base)
+::warning file=src/payments/processor.py,line=19,title=AgentProbe::[pattern] Function 'formatReceipt' is camelCase, expected snake_case
+::warning file=src/payments/processor.py,line=12,title=AgentProbe::[regression] charge: error_paths: raise PaymentError(f"invalid amount: {amount}") -> returns None
+::warning file=src/payments/processor.py,line=12,title=AgentProbe::[regression] charge: Hypothesis found `charge(amount=0)`: before raised PaymentError, after returned None
+exit code: 0 | outputs: verdict=WARN score=33.0 | commit status: success | OK
+
+=== PR #3 3-currency-format (docker) ===
+AgentProbe verdict: PASS (score 0.0/100, policy from base)
+exit code: 0 | outputs: verdict=PASS score=0.0 | commit status: success | OK
+
+3/3 PRs matched the expected verdict and exit code.
 ```
 
-## Agents
+And the sticky comment it posts on PR #2:
 
-| Agent | Purpose | LLM? |
-|-------|---------|------|
-| **Architecture Agent** | Checks module boundary violations and layer rules | No |
-| **Pattern Agent** | Enforces naming conventions, import order, forbidden patterns | No |
-| **Regression Agent** | Detects semantic behavior changes in modified functions | Optional (Ollama) |
-| **Verdict Orchestrator** | Aggregates scores and generates PR comment | No |
+> ## ⚠️ AgentProbe Verdict: **WARN** (score: 33.0/100)
+> ### ✅ Architecture: PASS
+> ### ⚠️ Pattern: WARN
+> - [WARN] `src/payments/processor.py:19`: Function 'formatReceipt' is camelCase, expected snake_case
+> ### ⚠️ Regression: WARN
+> - [HIGH] `charge` (`src/payments/processor.py:12`) — error_paths: raise PaymentError(f"invalid amount: {amount}") → returns None
+> - [HIGH] `charge` (`src/payments/processor.py:12`) — property_test: Hypothesis found `charge(amount=0)`: before raised PaymentError, after returned None
+>
+> *Functions compared: 1 | LLM calls: 0 | Property-test runs: 1*
 
-## Scoring
+## Quickstart
 
-Weighted formula: `Architecture(40%) + Pattern(25%) + Regression(35%)`
-
-| Score | Verdict |
-|-------|---------|
-| 0-40 | PASS |
-| 41-70 | WARN |
-| 71+ | BLOCK |
-
-Architecture `FATAL` triggers an automatic `BLOCK` via short-circuit (skips Pattern + Regression).
-
-## Quick Start
-
-### As a GitHub Action
+### 1. Add the workflow
 
 ```yaml
 # .github/workflows/agentprobe.yml
 name: AgentProbe
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write   # sticky PR comment
+  statuses: write        # agentprobe/governance commit status
 
 jobs:
   governance:
@@ -77,123 +93,176 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: rakshithmuda22/agentprobe@main
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+        # all inputs are optional:
+        # with:
+        #   config_dir: .agentprobe   # where the policy files live
+        #   fail_on: block            # block | warn | never
+        #   post_comment: "true"      # false = annotations + job summary only
 ```
 
-### Local Development
+The step fails (exit 1) on BLOCK. To stop a BLOCK from being merged, mark the `governance` job
+(or the `agentprobe/governance` status) as a **required check** in branch protection. Outputs:
+`verdict`, `score`, `comment`. Findings also show up as inline annotations and in the job summary.
+On fork PRs GitHub gives a read-only token. The verdict, exit code and annotations still work;
+the comment and status are skipped with a warning.
 
-```bash
-# Clone and install
-git clone https://github.com/rakshithmuda22/agentprobe.git
-cd agentprobe
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+### 2. Add a policy in `.agentprobe/`
 
-# Run tests
-pytest tests/ -v
-
-# Optional: Start Ollama for LLM-powered regression analysis
-ollama pull llama3
-ollama serve
+`boundaries.yaml`
+```yaml
+modules:                        # module = first directory under src/, or set paths:
+  payments:
+    allowed_imports: [shared]   # first-party allow-list (stdlib/third-party always allowed)
+    forbidden_imports: [analytics, requests]   # deny-list (works for third-party too)
+  analytics:
+    paths: [src/analytics]      # optional, e.g. for src/<package>/... layouts
+layers:
+  - name: presentation
+    paths: [src/api, src/web]
+    can_import: [domain]
+  - name: domain
+    paths: [src/models, src/services]
+    can_import: []
 ```
 
-## Configuration
+`style-profile.yaml`
+```yaml
+naming:
+  functions: snake_case
+  classes: PascalCase
+  files: snake_case             # checked for new files only
+  typescript:                   # optional per-language overrides
+    functions: camelCase
+    files: kebab-case
+imports:
+  order: [builtin, external, internal, relative]   # Python, module-level imports
+  max_depth: 4                  # optional: warn on deep first-party imports
+forbidden:
+  - console.log-in-production-code   # built-ins: this and any-type-in-typescript
+  - name: no-eval
+    pattern: '\beval\('
+    severity: FATAL             # FATAL blocks the PR; default WARN
+  - name: no-print
+    pattern: '^\s*print\('
+    files: "*.py"
+    message: Use the logger instead of print()
+```
 
-### `.agentprobe/config.yaml`
-
+`config.yaml` (every key optional; defaults shown)
 ```yaml
 thresholds:
-  block: 70
-  warn: 40
+  block: 70        # weighted score above this -> BLOCK
+  warn: 0          # above this -> WARN (0 = any finding is reported)
 weights:
   architecture: 0.40
   pattern: 0.25
   regression: 0.35
 regression:
-  critical_dirs: ["src/payments", "src/auth"]
-  max_llm_calls_per_pr: 20
-  timing_divergence_threshold: 0.20
-cache:
-  backend: memory
+  max_functions_per_pr: 20
+  property_tests: false          # Layer 2 executes PR code; read "Security" first
+  critical_dirs: [src/payments, src/auth]   # Layer 2 only runs here ([] = everywhere)
+  property_test_examples: 200
+  property_test_timeout_seconds: 60
 llm:
-  provider: ollama
-  model: llama3
-  base_url: http://localhost:11434
+  provider: none                 # "ollama" = experimental local-LLM summaries in Layer 1
 ```
 
-### `.agentprobe/boundaries.yaml`
-
-```yaml
-modules:
-  payments:
-    allowed_imports: [utils, models]
-    forbidden_imports: [analytics, marketing]
-  analytics:
-    allowed_imports: [utils]
-layers:
-  - name: presentation
-    modules: [src/api, src/web]
-    can_import: [domain]
-  - name: domain
-    modules: [src/models, src/services]
-    can_import: [infrastructure]
-  - name: infrastructure
-    modules: [src/db, src/cache]
-    can_import: []
-```
-
-### `.agentprobe/style-profile.yaml`
-
-```yaml
-naming:
-  functions: snake_case
-  classes: PascalCase
-  files: snake_case
-imports:
-  order: [builtin, external, internal, relative]
-forbidden:
-  - console.log-in-production-code
-  - any-type-in-typescript
-```
-
-## Webhook Server
-
-For self-hosted deployments:
+### 3. Or run it locally, no GitHub needed
 
 ```bash
-export GITHUB_TOKEN=ghp_...
-export GITHUB_WEBHOOK_SECRET=your-secret
-uvicorn agentprobe.integrations.webhook_server:app --host 0.0.0.0 --port 8000
+git clone https://github.com/rakshithmuda22/agentprobe.git && cd agentprobe
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+python scripts/e2e_action.py --runner local   # the 3-PR demo above, without Docker
+agentprobe check --repo /path/to/your/repo --base main --head HEAD   # exit 1 on BLOCK
 ```
 
-Configure your GitHub webhook to point to `https://your-server/webhook` with content type `application/json` and the same secret.
+## How it works
+
+```mermaid
+graph LR
+    A[PR diff + base policy<br/>+ full before/after files] --> B[Architecture]
+    B --> C[Pattern]
+    C -->|no FATAL| D[Regression<br/>L1 summary diff<br/>L2 property test]
+    C -->|FATAL: short-circuit| E[Verdict]
+    D --> E
+    E --> F[PR comment, commit status,<br/>annotations, exit code]
+```
+
+* **Inputs.** The action reads the PR diff from the GitHub API, the three policy files at the
+  base SHA, and the full before/after contents of modified code files. The same pipeline backs
+  the `agentprobe check` CLI (using `git`) and the optional webhook server.
+* **Scoring.** Each finding is worth points by severity (FATAL 100, HIGH 40, WARN/MEDIUM 20).
+  Each analyzer's points are capped at 100, then weighted 40/25/35. Any FATAL finding → BLOCK.
+  Otherwise score > `block` → BLOCK, score > `warn` → WARN, else PASS. Many small issues can add
+  up to a BLOCK; a single issue is never silently scored as PASS.
+* **Short-circuit.** After a FATAL boundary violation, the regression analyzer, the slowest
+  step, is skipped. The pattern analyzer still runs, so the author sees every style issue in
+  one pass.
 
 ## Security
 
-- Webhook signature verification (HMAC-SHA256) is **always required**
-- Function names are validated against `[a-zA-Z_][a-zA-Z0-9_]*` before generated property tests run in a subprocess
-- Source code size limits prevent DoS (50KB per function, 1MB per diff)
-- Subprocess execution uses a 30s timeout (property tests)
-- Constant-time signature comparison prevents timing attacks
-- No arbitrary code execution from PR diffs without validation
+* **Layer 2 executes PR code**, which is why it's off by default. When it's enabled, the code
+  runs in a separate `python -I` process. That process keeps only top-level imports, defs,
+  classes and assignments (calls and `__main__` blocks are dropped), and it gets a scrubbed environment (no
+  `GITHUB_TOKEN`), CPU/memory/file-size and wall-clock limits, a temporary working directory
+  and, inside the action container, the unprivileged `nobody` uid. That makes it hard for PR code
+  to read the parent process's token (verified in the container: `/proc/1/environ` gives
+  `PermissionError`), but it is **not a sandbox**: the code still has network access. Enable it
+  only on `pull_request` workflows, the same trust level as running the repo's tests. AgentProbe
+  refuses to run it under `pull_request_target`/`workflow_run` and in webhook mode.
+* The policy comes from the base commit, so a PR can't disable its own checks.
+* The webhook server requires an `X-Hub-Signature-256` HMAC-SHA256 on every request (constant-time
+  compare) and rejects everything if `GITHUB_WEBHOOK_SECRET` is unset.
+* Size limits: 1 MB diff, 50 KB per function, 500 KB per module sent to Layer 2. Function names
+  are validated before they reach the harness.
 
-## Project Structure
+## Self-hosted webhook server (optional)
+
+```bash
+GITHUB_TOKEN=... GITHUB_WEBHOOK_SECRET=... docker compose up --build   # serves :8000/webhook
+```
+
+It uses the same pipeline and reads the policy from the base SHA over the API. It never runs
+Layer 2. It authenticates with a token, not as a GitHub App.
+
+## Tests and CI
+
+* `pytest`: **148 tests** (Python 3.11 and 3.12). They cover the analyzers, false-positive
+  regressions, scoring, the property-test harness (including that the child can't see
+  `GITHUB_TOKEN`), the action entrypoint (inputs, outputs, annotations, fork-PR permission
+  failures), the CLI against real temporary git repos, the GitHub client, and webhook HMAC
+  verification.
+* The `action-e2e` CI job builds the Docker image and runs the three sample PRs through it.
+* AgentProbe governs its own PRs ([`.github/workflows/agentprobe.yml`](.github/workflows/agentprobe.yml),
+  policy in [`.agentprobe/`](.agentprobe)): analyzers may not import the GitHub integration layer.
+
+## Limitations and roadmap
+
+* Layer 1 is a structural heuristic: it sees raise/return/print lines and signatures, not data
+  flow. Layer 2 needs functions whose parameters are builtin types (int, float, str, Decimal,
+  lists of them…); methods and functions taking custom classes are skipped, with the reason shown.
+* Import resolution doesn't know TS path aliases (`@/x`) or Go module paths, so for those only
+  relative imports and modules declared in `boundaries.yaml` are treated as first-party.
+* One commit status and comment per run; GitHub Checks API annotations would be richer.
+* `tree-sitter-languages` is unmaintained and has no Python 3.13 wheels. The next step is moving
+  to `tree-sitter-language-pack`.
+* Next: a real sandbox (gVisor/Firecracker) for Layer 2, and a benchmark of false-positive rates
+  on real open-source PR history.
+
+## Project layout
 
 ```
 agentprobe/
-  agentprobe/
-    agents/           # Architecture, Pattern, Regression, Verdict
-    cache/            # In-memory cache with TTL
-    config/           # YAML config loader
-    graph/            # LangGraph DAG (state, workflow, nodes)
-    integrations/     # GitHub App, webhook server, action runner
-    parsers/          # Tree-sitter engine, diff parser, import graph
-    profiles/         # Boundary loader, style generator
-  tests/              # 90 governance tests: agents, parsers, workflow, integrations
-  action/             # GitHub Action manifest and Dockerfile
-  .agentprobe/        # Default configuration files
+  agents/        architecture, pattern, regression analyzers; verdict; pbt_harness (Layer 2 child)
+  graph/         LangGraph state + workflow
+  parsers/       tree-sitter engine, diff parser, import resolution + boundary checks
+  profiles/      policy loaders, naming/forbidden-pattern rules
+  integrations/  action entrypoint, shared pipeline, GitHub client, webhook server
+  cli.py         `agentprobe check` / `agentprobe action`
+action.yml, Dockerfile   the GitHub Action
+examples/acme-shop       sample repo + 3 PRs used by scripts/e2e_action.py and CI
 ```
 
 ## License

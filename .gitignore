@@ -29,3 +29,4 @@ htmlcov/
 .hypothesis/
 *.egg-info/
 .claude/
+.benchmarks/
