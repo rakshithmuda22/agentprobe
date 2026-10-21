@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from src.parsers.tree_sitter_engine import ImportStmt
+from agentprobe.parsers.tree_sitter_engine import ImportStmt
 
 
 @dataclass

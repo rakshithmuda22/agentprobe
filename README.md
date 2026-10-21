@@ -165,7 +165,7 @@ For self-hosted deployments:
 ```bash
 export GITHUB_TOKEN=ghp_...
 export GITHUB_WEBHOOK_SECRET=your-secret
-uvicorn src.integrations.webhook_server:app --host 0.0.0.0 --port 8000
+uvicorn agentprobe.integrations.webhook_server:app --host 0.0.0.0 --port 8000
 ```
 
 Configure your GitHub webhook to point to `https://your-server/webhook` with content type `application/json` and the same secret.
@@ -183,7 +183,7 @@ Configure your GitHub webhook to point to `https://your-server/webhook` with con
 
 ```
 agentprobe/
-  src/
+  agentprobe/
     agents/           # Architecture, Pattern, Regression, Verdict
     cache/            # In-memory cache with TTL
     config/           # YAML config loader

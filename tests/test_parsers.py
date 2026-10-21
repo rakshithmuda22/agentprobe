@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from src.parsers.tree_sitter_engine import TreeSitterEngine
-from src.parsers.diff_parser import parse_diff
-from src.parsers.import_graph import ImportGraph, Boundaries
+from agentprobe.parsers.tree_sitter_engine import TreeSitterEngine
+from agentprobe.parsers.diff_parser import parse_diff
+from agentprobe.parsers.import_graph import ImportGraph, Boundaries
 
 
 # ── Tree-sitter Engine ──────────────────────────────────────────

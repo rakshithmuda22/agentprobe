@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from src.agents.regression_agent import (
+from agentprobe.agents.regression_agent import (
     LogicSummarizer,
     PropertyTestGenerator,
     BehavioralFingerprinter,
@@ -13,8 +13,8 @@ from src.agents.regression_agent import (
     run,
     _global_cache,
 )
-from src.cache.memory_cache import MemoryCache
-from src.graph.state import AgentProbeState
+from agentprobe.cache.memory_cache import MemoryCache
+from agentprobe.graph.state import AgentProbeState
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "semantic_regression_repo"

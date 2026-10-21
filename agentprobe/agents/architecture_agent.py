@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.graph.state import AgentProbeState
-from src.parsers.diff_parser import parse_diff
-from src.parsers.tree_sitter_engine import TreeSitterEngine
-from src.parsers.import_graph import ImportGraph
-from src.profiles.boundary_loader import load_boundaries
-from src.config.loader import load_config
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.parsers.diff_parser import parse_diff
+from agentprobe.parsers.tree_sitter_engine import TreeSitterEngine
+from agentprobe.parsers.import_graph import ImportGraph
+from agentprobe.profiles.boundary_loader import load_boundaries
+from agentprobe.config.loader import load_config
 
 
 def run(state: AgentProbeState) -> AgentProbeState:

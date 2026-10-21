@@ -9,9 +9,9 @@ from pathlib import Path
 
 import structlog
 
-from src.graph.state import AgentProbeState
-from src.graph.workflow import run_agentprobe
-from src.integrations.github_app import GitHubClient
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.graph.workflow import run_agentprobe
+from agentprobe.integrations.github_app import GitHubClient
 
 logger = structlog.get_logger(__name__)
 

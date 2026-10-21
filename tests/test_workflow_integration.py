@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from src.graph.state import AgentProbeState
-from src.graph.workflow import run_agentprobe
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.graph.workflow import run_agentprobe
 
 
 def test_full_workflow_all_agents_called(minimal_state):

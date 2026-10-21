@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.graph.state import AgentProbeState
+from agentprobe.graph.state import AgentProbeState
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

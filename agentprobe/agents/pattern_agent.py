@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.graph.state import AgentProbeState
-from src.parsers.diff_parser import parse_diff
-from src.parsers.tree_sitter_engine import TreeSitterEngine
-from src.profiles.style_generator import (
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.parsers.diff_parser import parse_diff
+from agentprobe.parsers.tree_sitter_engine import TreeSitterEngine
+from agentprobe.profiles.style_generator import (
     check_forbidden_patterns,
     check_import_order,
     check_name_convention,

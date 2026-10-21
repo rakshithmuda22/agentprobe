@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.agents.verdict_orchestrator import run, build_comment, STATUS_SCORES
-from src.graph.state import AgentProbeState
+from agentprobe.agents.verdict_orchestrator import run, build_comment, STATUS_SCORES
+from agentprobe.graph.state import AgentProbeState
 
 
 def _make_state(**overrides) -> AgentProbeState:

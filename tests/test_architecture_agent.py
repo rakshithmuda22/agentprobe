@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.agents.architecture_agent import run
-from src.graph.state import AgentProbeState
+from agentprobe.agents.architecture_agent import run
+from agentprobe.graph.state import AgentProbeState
 
 
 def _make_state(pr_diff: str, repo_path: str = ".") -> AgentProbeState:

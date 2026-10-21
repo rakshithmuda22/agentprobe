@@ -30,4 +30,4 @@ jobs:
         run: pytest tests/ -v --tb=short
 
       - name: Check imports
-        run: python -c "from src.graph.workflow import run_agentprobe; print('Imports OK')"
+        run: python -c "from agentprobe.graph.workflow import run_agentprobe; print('Imports OK')"

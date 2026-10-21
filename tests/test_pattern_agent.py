@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from src.agents.pattern_agent import run
-from src.graph.state import AgentProbeState
-from src.profiles.style_generator import detect_case, detect_import_category, check_import_order
+from agentprobe.agents.pattern_agent import run
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.profiles.style_generator import detect_case, detect_import_category, check_import_order
 
 
 def _make_state(pr_diff: str, repo_path: str = ".") -> AgentProbeState:

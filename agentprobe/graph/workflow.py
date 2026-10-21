@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from langgraph.graph import StateGraph, END
 
-from src.graph.state import AgentProbeState
-from src.graph.nodes import (
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.graph.nodes import (
     architecture_node,
     pattern_node,
     regression_node,

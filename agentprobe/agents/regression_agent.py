@@ -27,12 +27,12 @@ FUNCTION_NAME_PATTERN = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
 import httpx
 
-from src.cache.hash_utils import cache_key, function_hash
-from src.cache.memory_cache import MemoryCache
-from src.config.loader import load_config
-from src.graph.state import AgentProbeState
-from src.parsers.diff_parser import parse_diff
-from src.parsers.tree_sitter_engine import TreeSitterEngine
+from agentprobe.cache.hash_utils import cache_key, function_hash
+from agentprobe.cache.memory_cache import MemoryCache
+from agentprobe.config.loader import load_config
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.parsers.diff_parser import parse_diff
+from agentprobe.parsers.tree_sitter_engine import TreeSitterEngine
 
 
 # ── Dataclasses ─────────────────────────────────────────────────

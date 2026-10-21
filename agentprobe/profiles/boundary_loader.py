@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from src.parsers.import_graph import Boundaries
+from agentprobe.parsers.import_graph import Boundaries
 
 
 def load_boundaries(path: str | Path = ".agentprobe/boundaries.yaml") -> Boundaries:

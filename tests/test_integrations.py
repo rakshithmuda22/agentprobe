@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.integrations.webhook_server import app, _verify_signature
+from agentprobe.integrations.webhook_server import app, _verify_signature
 
 
 # ── Webhook Signature Verification ──
@@ -101,7 +101,7 @@ class TestWebhookEndpoint:
         )
         assert resp.status_code == 500
 
-    @patch("src.integrations.webhook_server._process_pr")
+    @patch("agentprobe.integrations.webhook_server._process_pr")
     def test_valid_pr_opened_starts_processing(self, mock_process, client):
         secret = "test-secret"
         payload = json.dumps({
@@ -152,7 +152,7 @@ class TestWebhookEndpoint:
 class TestActionRunner:
     @patch.dict(os.environ, {"GITHUB_TOKEN": ""}, clear=True)
     def test_missing_token_exits_1(self):
-        from src.integrations.action_runner import main
+        from agentprobe.integrations.action_runner import main
         assert main() == 1
 
     @patch.dict(
@@ -161,7 +161,7 @@ class TestActionRunner:
         clear=True,
     )
     def test_missing_event_file_exits_1(self):
-        from src.integrations.action_runner import main
+        from agentprobe.integrations.action_runner import main
         assert main() == 1
 
     @patch.dict(
@@ -170,7 +170,7 @@ class TestActionRunner:
         clear=True,
     )
     def test_empty_event_path_exits_1(self):
-        from src.integrations.action_runner import main
+        from agentprobe.integrations.action_runner import main
         assert main() == 1
 
     def test_missing_pr_number_exits_1(self, tmp_path):
@@ -185,11 +185,11 @@ class TestActionRunner:
             },
             clear=True,
         ):
-            from src.integrations.action_runner import main
+            from agentprobe.integrations.action_runner import main
             assert main() == 1
 
-    @patch("src.integrations.action_runner.GitHubClient")
-    @patch("src.integrations.action_runner.run_agentprobe")
+    @patch("agentprobe.integrations.action_runner.GitHubClient")
+    @patch("agentprobe.integrations.action_runner.run_agentprobe")
     def test_pass_verdict_exits_0(self, mock_run, mock_client_cls, tmp_path):
         event_file = tmp_path / "event.json"
         event_file.write_text(json.dumps({"pull_request": {"number": 5}}))
@@ -212,11 +212,11 @@ class TestActionRunner:
             },
             clear=True,
         ):
-            from src.integrations.action_runner import main
+            from agentprobe.integrations.action_runner import main
             assert main() == 0
 
-    @patch("src.integrations.action_runner.GitHubClient")
-    @patch("src.integrations.action_runner.run_agentprobe")
+    @patch("agentprobe.integrations.action_runner.GitHubClient")
+    @patch("agentprobe.integrations.action_runner.run_agentprobe")
     def test_block_verdict_exits_1(self, mock_run, mock_client_cls, tmp_path):
         event_file = tmp_path / "event.json"
         event_file.write_text(json.dumps({"pull_request": {"number": 5}}))
@@ -239,5 +239,5 @@ class TestActionRunner:
             },
             clear=True,
         ):
-            from src.integrations.action_runner import main
+            from agentprobe.integrations.action_runner import main
             assert main() == 1

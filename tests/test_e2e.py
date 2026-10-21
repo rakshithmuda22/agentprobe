@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.graph.state import AgentProbeState
-from src.graph.workflow import run_agentprobe
+from agentprobe.graph.state import AgentProbeState
+from agentprobe.graph.workflow import run_agentprobe
 
 
 def _make_state(pr_diff: str, repo_path: str = ".") -> AgentProbeState:

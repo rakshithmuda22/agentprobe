@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.config.loader import AgentProbeConfig, load_config
-from src.graph.state import AgentProbeState
+from agentprobe.config.loader import AgentProbeConfig, load_config
+from agentprobe.graph.state import AgentProbeState
 
 
 STATUS_SCORES = {"PASS": 0, "WARN": 50, "FATAL": 100, "BLOCK": 100}
