@@ -9,3 +9,5 @@ regression:
   critical_dirs: []
   max_functions_per_pr: 20
   property_tests: false
+# examples/ contains intentionally non-compliant sample PRs for the e2e test.
+ignore_paths: ["examples/*", "tests/fixtures/*"]

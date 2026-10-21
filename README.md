@@ -165,6 +165,7 @@ regression:
   property_test_timeout_seconds: 60
 llm:
   provider: none                 # "ollama" = experimental local-LLM summaries in Layer 1
+ignore_paths: []                 # globs to skip, e.g. ["vendor/*", "*_pb2.py"]
 ```
 
 ### 3. Or run it locally, no GitHub needed
@@ -229,7 +230,7 @@ Layer 2. It authenticates with a token, not as a GitHub App.
 
 ## Tests and CI
 
-* `pytest`: **148 tests** (Python 3.11 and 3.12). They cover the analyzers, false-positive
+* `pytest`: **149 tests** (Python 3.11 and 3.12). They cover the analyzers, false-positive
   regressions, scoring, the property-test harness (including that the child can't see
   `GITHUB_TOKEN`), the action entrypoint (inputs, outputs, annotations, fork-PR permission
   failures), the CLI against real temporary git repos, the GitHub client, and webhook HMAC

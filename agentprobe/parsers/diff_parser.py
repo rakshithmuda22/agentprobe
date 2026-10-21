@@ -82,6 +82,19 @@ NEW_FILE_RE = re.compile(r"^new file mode")
 DELETED_FILE_RE = re.compile(r"^deleted file mode")
 
 
+def filter_diff(diff_text: str, is_ignored: Callable[[str], bool]) -> str:
+    """Drop the sections of a unified diff whose file path is ignored."""
+    out: list[str] = []
+    keep = True
+    for line in diff_text.split("\n"):
+        header = DIFF_HEADER_RE.match(line)
+        if header:
+            keep = not is_ignored(header.group(2))
+        if keep:
+            out.append(line)
+    return "\n".join(out)
+
+
 def parse_diff(diff_text: str) -> DiffResult:
     """Parse a GitHub unified diff string into structured FileChange objects."""
     result = DiffResult()

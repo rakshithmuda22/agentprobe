@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,12 @@ class AgentProbeConfig:
     regression: RegressionConfig = field(default_factory=RegressionConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    # Glob patterns (fnmatch on repo-relative paths) the analyzers skip,
+    # e.g. ["examples/*", "tests/fixtures/*", "*_pb2.py"].
+    ignore_paths: list[str] = field(default_factory=list)
+
+    def is_ignored(self, path: str) -> bool:
+        return any(fnmatch.fnmatch(path, pattern) for pattern in self.ignore_paths)
 
 
 # Old key names that are still accepted so existing config files keep loading.
@@ -94,6 +101,7 @@ def load_config(config_path: str | Path = ".agentprobe/config.yaml") -> AgentPro
         regression=_build(RegressionConfig, raw.get("regression"), "regression"),
         cache=_build(CacheConfig, raw.get("cache"), "cache"),
         llm=_build(LLMConfig, raw.get("llm"), "llm"),
+        ignore_paths=[str(p) for p in raw.get("ignore_paths") or []],
     )
 
 

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import tree_sitter_languages
+# tree-sitter 0.21 warns on the Language(path, name) call tree_sitter_languages makes.
+warnings.filterwarnings("ignore", category=FutureWarning, module="tree_sitter")
+
+import tree_sitter_languages  # noqa: E402
 
 
 @dataclass

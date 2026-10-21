@@ -131,3 +131,12 @@ def test_materialize_policy_falls_back_to_workspace(tmp_path):
     assert materialize_policy(lambda p, r: None, "abc", ".agentprobe", target, ws) == "workspace"
     assert (target / "boundaries.yaml").read_text() == "modules: {}\n"
     assert materialize_policy(None, None, ".agentprobe", tmp_path / "o2", None) == "none"
+
+
+def test_ignore_paths_skip_files(repo, capsys):
+    _commit(repo, {".agentprobe/config.yaml": "ignore_paths: ['vendor/*']\n"}, "ignore vendor")
+    _git(repo, "checkout", "-q", "-b", "vendored")
+    _commit(repo, {"vendor/lib.py": "def badName():\n    return 1\n",
+                   "src/payments/ok.py": "def fine():\n    return 1\n"}, "vendored")
+    code, out = _check(repo, "vendored", capsys)
+    assert (code, out["verdict"]) == (0, "PASS")

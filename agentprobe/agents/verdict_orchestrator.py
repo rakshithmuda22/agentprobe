@@ -60,6 +60,11 @@ def _format_violations(violations: list[dict], header: str) -> str:
     return "\n".join(lines)
 
 
+def _clip(text: str, limit: int = 140) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _format_deltas(deltas: list[dict]) -> str:
     """Format regression deltas as a markdown section."""
     if not deltas:
@@ -73,8 +78,8 @@ def _format_deltas(deltas: list[dict]) -> str:
         if d.get("summary"):
             lines.append(f"- [{severity}] `{func}`{where} — {field}: {d['summary']}")
         else:
-            lines.append(f"- [{severity}] `{func}`{where} — {field}: {d.get('before', '')} → "
-                         f"{d.get('after', '')}")
+            lines.append(f"- [{severity}] `{func}`{where} — {field}: "
+                         f"{_clip(d.get('before', ''))} → {_clip(d.get('after', ''))}")
     if len(deltas) > 10:
         lines.append(f"- ... and {len(deltas) - 10} more")
     return "\n".join(lines)

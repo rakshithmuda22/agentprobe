@@ -16,10 +16,10 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from agentprobe.config.loader import DEFAULT_CONFIG_DIR
+from agentprobe.config.loader import DEFAULT_CONFIG_DIR, load_config
 from agentprobe.graph.state import AgentProbeState
 from agentprobe.graph.workflow import run_agentprobe
-from agentprobe.parsers.diff_parser import parse_diff
+from agentprobe.parsers.diff_parser import filter_diff, parse_diff
 from agentprobe.parsers.tree_sitter_engine import EXTENSION_TO_LANGUAGE
 
 logger = logging.getLogger(__name__)
@@ -116,6 +116,9 @@ def run_pipeline(
     with tempfile.TemporaryDirectory(prefix="agentprobe-policy-") as tmp:
         policy_source = materialize_policy(fetch, base_ref, policy_repo_dir, Path(tmp),
                                            fallback)
+        config = load_config(Path(tmp) / "config.yaml")
+        if config.ignore_paths:
+            diff = filter_diff(diff, config.is_ignored)
         state = AgentProbeState(
             pr_diff=diff,
             repo_path=repo_path or "",
@@ -149,6 +152,7 @@ def iter_findings(state: AgentProbeState):
                 f"[{label}] {v.get('description') or v.get('rule_violated', '')}",
             )
     for d in (state.get("regression_report") or {}).get("deltas", []):
-        text = d.get("summary") or f"{d.get('field')}: {d.get('before')} -> {d.get('after')}"
+        text = d.get("summary") or (f"{d.get('field')}: {str(d.get('before'))[:140]} -> "
+                                    f"{str(d.get('after'))[:140]}")
         yield (d.get("severity", "MEDIUM"), d.get("file", ""), d.get("line") or 0,
                f"[regression] {d.get('function')}: {text}")

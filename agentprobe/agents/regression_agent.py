@@ -217,10 +217,15 @@ class LogicSummarizer:
 
         return {
             "inputs": inputs,
-            "side_effects": side_effects,
-            "error_paths": error_paths or ["none detected"],
-            "return_behavior": return_behavior or ["unknown"],
+            "side_effects": _unique(side_effects),
+            "error_paths": _unique(error_paths) or ["none detected"],
+            "return_behavior": _unique(return_behavior) or ["unknown"],
         }
+
+
+def _unique(items: list[str]) -> list[str]:
+    """Order-preserving de-duplication (five `return 1` lines are one behavior)."""
+    return list(dict.fromkeys(items))
 
 
 def _render(value) -> str:
