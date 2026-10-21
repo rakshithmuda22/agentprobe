@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentprobe"
-version = "0.1.0"
+version = "1.0.0"
 description = "Deterministic PR governance GitHub Action: architecture boundaries, naming/forbidden-pattern rules and behavior-change detection, orchestrated with LangGraph. No LLM, no API keys."
 readme = "README.md"
 license = {text = "MIT"}
