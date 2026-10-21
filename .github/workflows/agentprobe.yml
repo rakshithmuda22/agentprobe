@@ -1,0 +1,22 @@
+# Dogfooding: AgentProbe governs its own pull requests using the action
+# defined in this repository (uses: ./) and the policy in .agentprobe/.
+name: AgentProbe
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write   # sticky PR comment
+  statuses: write        # agentprobe/governance commit status
+
+jobs:
+  governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: agentprobe
+        uses: ./
+      - run: echo "AgentProbe verdict ${{ steps.agentprobe.outputs.verdict }} (score ${{ steps.agentprobe.outputs.score }})"
+        if: always()

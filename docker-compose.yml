@@ -1,11 +1,11 @@
+# Self-hosted webhook server (alternative to the GitHub Action).
+#   GITHUB_TOKEN=... GITHUB_WEBHOOK_SECRET=... docker compose up --build
 services:
-  app:
-    build: ./action
+  webhook:
+    build: .
+    entrypoint: ["uvicorn", "agentprobe.integrations.webhook_server:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
-    volumes:
-      - .:/app
     environment:
-      - GITHUB_APP_ID=${GITHUB_APP_ID:-}
-      - GITHUB_PRIVATE_KEY=${GITHUB_PRIVATE_KEY:-}
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - GITHUB_TOKEN=${GITHUB_TOKEN:?set GITHUB_TOKEN}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET}

@@ -1,0 +1,7 @@
+thresholds:
+  block: 70
+  warn: 0
+regression:
+  critical_dirs: [src/payments]
+  property_tests: true        # differential Hypothesis tests on payments code
+  property_test_examples: 200

@@ -1,0 +1,33 @@
+name: "AgentProbe PR Governance"
+description: "Deterministic PR governance: architecture boundaries, naming and forbidden-pattern rules, behavior-change detection. No LLM, no API keys."
+author: "rakshithmuda22"
+branding:
+  icon: "shield"
+  color: "blue"
+inputs:
+  github_token:
+    description: "Token used to read the PR and post the comment/status. Needs pull-requests: write and statuses: write to post."
+    required: false
+    default: ${{ github.token }}
+  config_dir:
+    description: "Policy directory in the repo (config.yaml, boundaries.yaml, style-profile.yaml). Read from the PR's base commit."
+    required: false
+    default: ".agentprobe"
+  post_comment:
+    description: "Create/update a PR comment and the agentprobe/governance commit status."
+    required: false
+    default: "true"
+  fail_on:
+    description: "Fail the step on 'block' (default), 'warn', or 'never'."
+    required: false
+    default: "block"
+outputs:
+  verdict:
+    description: "PASS, WARN or BLOCK"
+  score:
+    description: "Weighted governance score, 0-100"
+  comment:
+    description: "The markdown report"
+runs:
+  using: "docker"
+  image: "Dockerfile"

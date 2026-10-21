@@ -1,4 +1,8 @@
-"""FastAPI webhook server for GitHub PR events."""
+"""FastAPI webhook server for GitHub PR events (self-hosted alternative to the Action).
+
+Every request must carry a valid X-Hub-Signature-256 (HMAC-SHA256 of the raw
+body with GITHUB_WEBHOOK_SECRET); requests are rejected if the secret is unset.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +13,9 @@ import os
 from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 import structlog
 
-from agentprobe.graph.state import AgentProbeState
-from agentprobe.graph.workflow import run_agentprobe
+from agentprobe.agents.verdict_orchestrator import COMMENT_MARKER
 from agentprobe.integrations.github_app import GitHubClient
+from agentprobe.integrations.pipeline import run_pipeline
 
 logger = structlog.get_logger(__name__)
 
@@ -33,36 +37,34 @@ async def _process_pr(
     pr_number: int,
     github_token: str,
 ) -> None:
-    """Process a PR event: run AgentProbe pipeline and post results."""
+    """Process a PR event: run the pipeline and post results.
+
+    The policy is read from the PR's base commit via the API, so the server
+    needs no checkout. PR code is never executed in webhook mode (the server
+    holds a long-lived token), so Layer 2 property tests are always off here.
+    """
     try:
-        client = GitHubClient(github_token)
-
-        # Get PR diff and HEAD SHA
+        client = GitHubClient(github_token, base_url=os.environ.get("GITHUB_API_URL"))
         pr_diff = client.get_pr_diff(repo_full_name, pr_number)
-        head_sha = client.get_pr_head_sha(repo_full_name, pr_number)
+        base_sha, head_sha = client.get_pr_refs(repo_full_name, pr_number)
 
-        # Build initial state
-        state = AgentProbeState(
-            pr_diff=pr_diff,
-            repo_path=".",
-            pr_number=pr_number,
+        def fetch(path: str, ref: str) -> str | None:
+            return client.get_file_content(repo_full_name, path, ref)
+
+        result, _policy_source = run_pipeline(
+            diff=pr_diff,
             repo_full_name=repo_full_name,
-            architecture_report=None,
-            pattern_report=None,
-            regression_report=None,
-            short_circuit=False,
-            verdict=None,
-            cached_functions=[],
-            cost_tracker={},
+            pr_number=pr_number,
+            fetch=fetch,
+            base_ref=base_sha,
+            head_ref=head_sha,
+            repo_path=None,
+            allow_code_execution=False,
         )
 
-        # Run the pipeline
-        result = run_agentprobe(state)
-
-        # Post results
         verdict = result.get("verdict", {})
         comment = verdict.get("comment", "AgentProbe analysis complete.")
-        client.post_pr_comment(repo_full_name, pr_number, comment)
+        client.upsert_pr_comment(repo_full_name, pr_number, comment, COMMENT_MARKER)
         client.set_check_status(
             repo_full_name,
             head_sha,
@@ -106,8 +108,8 @@ async def webhook(
     body = await request.json()
     action = body.get("action", "")
 
-    # Only process opened or synchronize (new push)
-    if action not in ("opened", "synchronize"):
+    # Only process opened, reopened or synchronize (new push)
+    if action not in ("opened", "reopened", "synchronize"):
         return {"status": "ignored", "reason": f"action '{action}' not handled"}
 
     pr = body.get("pull_request", {})

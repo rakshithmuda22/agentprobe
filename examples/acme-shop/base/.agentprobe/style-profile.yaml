@@ -1,0 +1,11 @@
+naming:
+  functions: snake_case
+  classes: PascalCase
+  files: snake_case
+imports:
+  order: [builtin, external, internal, relative]
+forbidden:
+  - name: no-print
+    pattern: '^\s*print\('
+    files: "*.py"
+    message: Use the logger instead of print()

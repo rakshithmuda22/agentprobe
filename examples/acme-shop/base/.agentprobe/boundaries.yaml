@@ -1,0 +1,7 @@
+# payments may only use shared helpers; it must never reach into analytics.
+modules:
+  payments:
+    allowed_imports: [shared]
+    forbidden_imports: [analytics]
+  analytics:
+    allowed_imports: [shared]

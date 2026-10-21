@@ -6,13 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11"]
-
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +23,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
@@ -29,5 +31,16 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
-      - name: Check imports
-        run: python -c "from agentprobe.graph.workflow import run_agentprobe; print('Imports OK')"
+      - name: CLI smoke test
+        run: agentprobe --help
+
+  action-e2e:
+    # Builds the action image exactly as the Actions runner would and runs it
+    # against examples/acme-shop (3 PRs) through a local stub of the GitHub API.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build action image
+        run: docker build -t agentprobe:local .
+      - name: Run action against sample PRs
+        run: python3 scripts/e2e_action.py --runner docker --image agentprobe:local

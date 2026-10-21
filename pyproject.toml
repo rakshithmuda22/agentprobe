@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentprobe"
 version = "0.1.0"
-description = "Deterministic AST-based PR governance as a GitHub Action — no LLM judge, no per-PR API cost"
+description = "Deterministic PR governance GitHub Action: architecture boundaries, naming/forbidden-pattern rules and behavior-change detection, orchestrated with LangGraph. No LLM, no API keys."
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"  # tree-sitter-languages has no 3.13 wheels
 dependencies = [
     "langgraph>=0.2.0",
     "tree-sitter>=0.21.0,<0.22.0",
@@ -27,6 +27,9 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
+
+[project.scripts]
+agentprobe = "agentprobe.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
